@@ -22,3 +22,6 @@ Added 2-line ffkit sibling-check to SBS_Download, FLAC_Flow, and RivalsVidMaker.
 - Ported FFMPEG-Compressor from WindowsFiles repo
 - Compressor updated to use shared `dependencies/ffmpeg/` and `data/logs/`
 - Sibling-check design agreed: path-only convention, no centralised download code
+
+**Why "ffkit" and not ffmpeg-tools or ffmpeg-kit:**
+`ffmpeg-tools` is generic (tools suffix adds nothing). `ffmpeg-kit` / `FFmpegKit` is taken - arthenica's archived iOS/Android SDK lives at that name, search results collide. `fflab` implies experimental. `ffkit` is short, the `ff` prefix signals FFmpeg clearly, and "kit" implies a curated ready-to-use collection without overpromising.
