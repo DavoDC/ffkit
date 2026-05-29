@@ -14,27 +14,36 @@ Setting up repo structure and porting the compressor tool from WindowsFiles.
 
 ---
 
-**Add sibling-check to 4 existing repos**
+**Sibling-check done - delete local FFmpeg copies from 3 Python repos**
 
-Each repo currently downloads FFmpeg into its own folder. Update each one to check for ffkit first.
+SBS_Download, FLAC_Flow, and RivalsVidMaker now check for ffkit first. Each still has a local FFmpeg copy on disk from before the change. Delete those to complete the disk deduplication.
 
-**Logic to implement in each repo (language-agnostic):**
-- Check if the ffkit repo folder exists as a sibling (`../ffkit/`)
-- If yes: download FFmpeg into ffkit's `dependencies/ffmpeg/` (if not already there), use it from there
-- If no: download FFmpeg into the repo's own local folder as before (existing behaviour unchanged)
-- The check is on the repo folder, not the binary - so the first repo to run triggers the download into ffkit
+Per repo:
+1. Confirm the sibling-check is working (run the tool, verify it uses ffkit's FFmpeg)
+2. Delete the local `dependencies/ffmpeg/` folder from that repo
 
-**Per-repo steps:**
-1. Update the FFmpeg finder to implement the above logic
-2. Delete the existing local FFmpeg copy from that repo (freeing disk space)
-3. Test both paths: with ffkit sibling present, and without
+Repos:
+- `SBS_Download` - delete `dependencies/ffmpeg/` once confirmed working
+- `FLAC_Flow` - delete `dependencies/ffmpeg/` once confirmed working
+- `RivalsVidMaker` - delete the locally downloaded FFmpeg copy (config-driven, now resolved via ffkit)
 
-Repos to update:
-- `SBS_Download` - has its own download logic (E15 first)
-- `FLAC_Flow` - has its own download logic (E15 first)
-- `RivalsVidMaker` - has its own download logic (E15 first)
-- `CoverVidMaker` - currently requires FFmpeg on PATH, needs download logic added (E15 first)
-- Raphael machine: blocked until holiday ends - do all 4 repos there as a batch when back
+---
+
+**CoverVidMaker - manual copy from ffkit**
+
+CVM is C++ with a flat `dependencies/` structure and manual FFmpeg setup. Auto-sibling-check not implemented.
+
+Action when setting up CVM: copy binaries from `../ffkit/dependencies/ffmpeg/` into `dependencies/` directly.
+
+Future consideration: standardise CVM's deps structure to `dependencies/ffmpeg/` subfolder for consistency with the Python repos. Requires C++ code changes to reference updated path.
+
+---
+
+---
+
+**Raphael machine - apply sibling-check and clean up local copies**
+
+Blocked until holiday ends. When back: apply the same sibling-check changes to SBS_Download, FLAC_Flow, RivalsVidMaker on Raphael, then delete the local FFmpeg copies from each repo there.
 
 ---
 
