@@ -1,36 +1,6 @@
 # ffkit
 
-Practical FFmpeg tools, and a shared FFmpeg location for sibling repos.
-
----
-
-## What ffkit does
-
-**1. Tools** - Ready-to-use scripts for common FFmpeg tasks (compress, trim, convert).
-
-**2. FFmpeg hub** - A single place for FFmpeg to live on disk, shared across multiple repos.
-Instead of every repo downloading its own copy, they check for ffkit first.
-
----
-
-## FFmpeg hub - how it works
-
-Any repo that uses FFmpeg can check whether `ffkit` exists as a sibling repo (i.e. `../ffkit/` is present).
-If it does, that repo downloads FFmpeg into `ffkit/dependencies/ffmpeg/` and uses it from there.
-If `ffkit` is not present, the repo falls back to downloading FFmpeg into its own local folder as normal.
-
-The check is on the `ffkit` repo folder itself - not on whether FFmpeg is already downloaded.
-This means whichever repo runs first triggers the download into `ffkit`, and all subsequent repos find it already there.
-This includes ffkit's own tools - running the compressor is enough to populate `dependencies/ffmpeg/` for all sibling repos.
-
-Repos stay fully standalone. `ffkit` being absent just means each repo handles its own FFmpeg copy.
-
-### Repos using this hub
-
-- [SBS_Download](https://github.com/DavoDC/SBS_Download)
-- [FLAC_Flow](https://github.com/DavoDC/FLAC_Flow)
-- [RivalsVidMaker](https://github.com/DavoDC/RivalsVidMaker)
-- [CoverVidMaker](https://github.com/DavoDC/CoverVidMaker)
+FFmpeg tools and a shared FFmpeg location for projects cloned alongside it.
 
 ---
 
@@ -47,6 +17,21 @@ Compress a video to a specific target file size using two-pass H.264 encoding.
 - Logs saved to `data/logs/`
 
 FFmpeg is downloaded automatically on first run.
+
+---
+
+## FFmpeg hub
+
+ffkit acts as a shared FFmpeg location for any project cloned alongside it.
+
+If `../ffkit/` exists, a project downloads FFmpeg into `ffkit/dependencies/ffmpeg/` and uses it from there - including ffkit's own tools. Once any project has run, all others find FFmpeg already present. If `ffkit` is absent, each project falls back to downloading into its own local folder. Projects stay fully standalone either way.
+
+### Projects using this hub
+
+- [SBS_Download](https://github.com/DavoDC/SBS_Download)
+- [FLAC_Flow](https://github.com/DavoDC/FLAC_Flow)
+- [RivalsVidMaker](https://github.com/DavoDC/RivalsVidMaker)
+- [CoverVidMaker](https://github.com/DavoDC/CoverVidMaker)
 
 ---
 
