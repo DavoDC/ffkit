@@ -15,14 +15,15 @@ Instead of every repo downloading its own copy, they check for ffkit first.
 
 ## FFmpeg hub - how it works
 
-Any repo that uses FFmpeg can check whether ffkit exists as a sibling repo.
-If it does, that repo downloads FFmpeg into ffkit's `dependencies/ffmpeg/` folder and uses it from there.
-If ffkit is not present, the repo falls back to downloading FFmpeg into its own local folder as normal.
+Any repo that uses FFmpeg can check whether `ffkit` exists as a sibling repo (i.e. `../ffkit/` is present).
+If it does, that repo downloads FFmpeg into `ffkit/dependencies/ffmpeg/` and uses it from there.
+If `ffkit` is not present, the repo falls back to downloading FFmpeg into its own local folder as normal.
 
-The check is on the ffkit repo folder itself - not on whether FFmpeg is already downloaded.
-This means the first repo to run will trigger the download into ffkit, and all subsequent repos find it already there.
+The check is on the `ffkit` repo folder itself - not on whether FFmpeg is already downloaded.
+This means whichever repo runs first triggers the download into `ffkit`, and all subsequent repos find it already there.
+This includes ffkit's own tools - running the compressor is enough to populate `dependencies/ffmpeg/` for all sibling repos.
 
-Repos stay fully standalone. ffkit being absent just means each repo handles its own FFmpeg copy.
+Repos stay fully standalone. `ffkit` being absent just means each repo handles its own FFmpeg copy.
 
 ### Repos using this hub
 
