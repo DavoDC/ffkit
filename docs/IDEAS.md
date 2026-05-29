@@ -16,28 +16,21 @@ Setting up repo structure and porting the compressor tool from WindowsFiles.
 
 **Add sibling-check to 4 existing repos**
 
-Each of these repos downloads FFmpeg independently. Add a sibling-check so they use ffkit's copy first, eliminating duplicate downloads.
+Each of these repos downloads FFmpeg independently. Add a sibling-check so they use ffkit's copy first, then delete their own local FFmpeg copy to free disk space.
+
+Per-repo steps:
+1. Add sibling-check to FFmpeg finder (check `../ffkit/dependencies/ffmpeg/ffmpeg.exe` first)
+2. Delete the local `ffmpeg/` or `dependencies/ffmpeg/` copy from that repo
+3. Test: with and without ffkit sibling present
 
 Repos to update:
-- `SBS_Download` - downloads FFmpeg if missing
-- `FLAC_Flow` - downloads FFmpeg if missing
-- `RivalsVidMaker` - downloads FFmpeg if missing
-- `CoverVidMaker` - requires FFmpeg on PATH
+- `SBS_Download` - downloads FFmpeg if missing (E15 only - do first)
+- `FLAC_Flow` - downloads FFmpeg if missing (E15 only)
+- `RivalsVidMaker` - downloads FFmpeg if missing (E15 only)
+- `CoverVidMaker` - requires FFmpeg on PATH (E15 only)
+- Raphael machine: blocked until holiday ends - do all 4 repos there as a batch when back
 
-Pattern to add in each repo (Python):
-
-```python
-import os
-
-FFKIT_FFMPEG = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ffkit', 'dependencies', 'ffmpeg', 'ffmpeg.exe')
-
-def get_ffmpeg_path():
-    if os.path.exists(FFKIT_FFMPEG):
-        return os.path.abspath(FFKIT_FFMPEG)
-    return download_ffmpeg_locally()  # existing fallback unchanged
-```
-
-Note: assumes ffkit is cloned as a sibling repo (same parent folder). Repos stay fully standalone - if ffkit is absent, they download their own copy as before.
+Note: repos stay fully standalone - if ffkit is absent they download their own copy. The sibling-check is a path check only, no code dependency on ffkit.
 
 ---
 

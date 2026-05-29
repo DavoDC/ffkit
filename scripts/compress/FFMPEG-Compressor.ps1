@@ -64,7 +64,7 @@ $TargetSizeMB = switch ($choice.Trim()) {
 Write-Host ""
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
-$LogFile = Join-Path $LogDir "${inputBase}_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$LogFile = Join-Path $LogDir "compress_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
 Start-Transcript -Path $LogFile -NoClobber | Out-Null
 
