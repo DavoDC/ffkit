@@ -1,0 +1,19 @@
+# FFmpeg binary (auto-downloaded at runtime, not committed)
+dependencies/ffmpeg/*
+!dependencies/ffmpeg/.gitkeep
+
+# Runtime data
+data/logs/*
+!data/logs/.gitkeep
+data/output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
