@@ -15,6 +15,10 @@ General-purpose FFmpeg scripts and utilities.
 Tools download FFmpeg to `dependencies/ffmpeg/` automatically if not on PATH.
 This is the shared location - sibling repos check here first before downloading their own copy.
 
+## Documentation rule for the hub
+
+ffkit is David's personal setup - external users of sibling repos won't have it. **Never mention ffkit in any public-facing README** of repos that use it (including `dependencies/README.md`). Only these internal surfaces may mention it: `CLAUDE.md` and `dependencies/ffmpeg/README.md`. The hub behavior is transparent (silent fallback) - external users need no awareness of it.
+
 ## Key paths
 
 | Path | Purpose |
