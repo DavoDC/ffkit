@@ -5,126 +5,8 @@ param(
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG - edit once to suit your setup
-$OutputDir = "C:\Users\David\Videos\Processed"
+$OutputDir = ""   # Empty = output alongside input (Downloads stays as output)
 # ──────────────────────────────────────────────────────────────────────────────
-
-$ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot     = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir ".."))
-$FfmpegDir    = Join-Path $RepoRoot "dependencies\ffmpeg"
-$LogDir       = Join-Path $RepoRoot "data\logs"
-$SessionStart = Get-Date
-
-if (-not (Test-Path $InputFile)) {
-    Write-Host "ERROR: File not found: $InputFile"
-    exit 1
-}
-
-$inputDir  = Split-Path -Parent $InputFile
-$inputBase = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
-$outDir    = if ($OutputDir -and $OutputDir.Trim()) { $OutputDir } else { $inputDir }
-if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
-
-$inputSizeMB     = [math]::Round((Get-Item $InputFile).Length / 1MB, 2)
-$quarterSizeMB   = [math]::Round($inputSizeMB * 0.25, 2)
-$halfSizeMB      = [math]::Round($inputSizeMB * 0.5, 2)
-
-Write-Host ""
-Write-Host "=== FFMPEG Kit ==="
-Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
-if ($outDir -ne $inputDir) { Write-Host "Output: $outDir" }
-Write-Host ""
-Write-Host "  [1] Compress to target size"
-Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
-Write-Host "  [3] Remove black bars only (keep original dimensions)"
-Write-Host ""
-$choice = Read-Host "  Choose (1-3)"
-Write-Host ""
-
-if ($choice -notin @("1","2","3")) {
-    Write-Host "Invalid choice."
-    exit 1
-}
-
-if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
-$LogFile = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-
-Start-Transcript -Path $LogFile -NoClobber | Out-Null
-
-$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } }
-Write-Host "=== FFMPEG Kit - $toolName ==="
-Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "Input   : $InputFile"
-Write-Host ""
-
-# ── Locate FFmpeg ─────────────────────────────────────────────────────────────
-Write-Host "[1] Locating FFmpeg..."
-
-function Find-InDir([string]$Dir, [string]$Name) {
-    $r = Get-ChildItem -Path $Dir -Filter $Name -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($r) { return $r.FullName }; return $null
-}
-
-$ffmpegExe = $null; $ffprobeExe = $null
-
-if (Test-Path $FfmpegDir) {
-    $ffmpegExe  = Find-InDir $FfmpegDir "ffmpeg.exe"
-    $ffprobeExe = Find-InDir $FfmpegDir "ffprobe.exe"
-}
-if (-not $ffmpegExe) {
-    $sysFF = Get-Command "ffmpeg"  -ErrorAction SilentlyContinue
-    $sysFP = Get-Command "ffprobe" -ErrorAction SilentlyContinue
-    if ($sysFF) { $ffmpegExe = $sysFF.Source; $ffprobeExe = if ($sysFP) { $sysFP.Source } else { $null } }
-}
-if (-not $ffmpegExe) {
-    Write-Host "  FFmpeg not found - downloading to $FfmpegDir ..."
-    if (-not (Test-Path $FfmpegDir)) { New-Item -ItemType Directory -Path $FfmpegDir | Out-Null }
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $7zExe = $null
-    foreach ($c in @("7z","7za","$env:ProgramFiles\7-Zip\7z.exe","${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
-        if ($c -match '\\') { if (Test-Path $c -EA SilentlyContinue) { $7zExe = $c; break } }
-        else                 { if (Get-Command $c -EA SilentlyContinue) { $7zExe = $c; break } }
-    }
-    if ($7zExe) {
-        $arch = Join-Path $FfmpegDir "ffmpeg-dl.7z"
-        Write-Host "  Downloading 7z archive (~32 MB)..."
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z" -OutFile $arch -UseBasicParsing
-        & $7zExe x $arch "-o$FfmpegDir" -y | Out-Null
-    } else {
-        $arch = Join-Path $FfmpegDir "ffmpeg-dl.zip"
-        Write-Host "  Downloading zip (~80 MB). Install 7-Zip for the smaller archive next time."
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $arch -UseBasicParsing
-        Expand-Archive -Path $arch -DestinationPath $FfmpegDir -Force
-    }
-    $ffmpegExe  = Find-InDir $FfmpegDir "ffmpeg.exe"
-    $ffprobeExe = Find-InDir $FfmpegDir "ffprobe.exe"
-    if (-not $ffmpegExe) { Write-Host "ERROR: ffmpeg.exe not found after download."; Stop-Transcript | Out-Null; exit 1 }
-    Write-Host "  Installed: $ffmpegExe"
-}
-if (-not $ffprobeExe) {
-    $c = $ffmpegExe -replace "ffmpeg\.exe$","ffprobe.exe"
-    if (Test-Path $c) { $ffprobeExe = $c }
-}
-if (-not $ffprobeExe) { Write-Host "ERROR: ffprobe.exe not found."; Stop-Transcript | Out-Null; exit 1 }
-Write-Host "  ffmpeg : $ffmpegExe"
-Write-Host "  ffprobe: $ffprobeExe"
-
-# ── Dispatch ──────────────────────────────────────────────────────────────────
-switch ($choice) {
-    "1" { Invoke-Compress }
-    "2" { Invoke-LandscapeFill }
-    "3" { Invoke-CropFix }
-}
-
-# ── Finish ────────────────────────────────────────────────────────────────────
-$totalSec = [int]((Get-Date) - $SessionStart).TotalSeconds
-Write-Host ""
-Write-Host "=== Complete ==="
-Write-Host "Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "Elapsed : $([int]($totalSec/60))m $($totalSec%60)s"
-Write-Host "Log     : $LogFile"
-Write-Host ""
-Stop-Transcript | Out-Null
-
 
 # ==============================================================================
 # TOOL: Compress to target size
@@ -140,6 +22,7 @@ function Invoke-Compress {
     }
     $durFmt = [TimeSpan]::FromSeconds($dur).ToString("hh\:mm\:ss")
     Write-Host "  Duration : $durFmt ($([math]::Round($dur,1))s)"
+    Write-Host "  Input    : ${inputSizeMB} MB"
 
     Write-Host ""
     Write-Host "  Target size:"
@@ -163,9 +46,9 @@ function Invoke-Compress {
     }
     Write-Host ""
 
-    $audioBps = if ($dur -gt 600) { 48 } elseif ($dur -gt 300) { 64 } else { 96 }
-    $targetBytes  = $TargetMB * 1024 * 1024 * 0.98
-    $vidBitrateK  = [int]([math]::Max(5, ($targetBytes * 8 / $dur - $audioBps * 1000) / 1000))
+    $audioBps    = if ($dur -gt 600) { 48 } elseif ($dur -gt 300) { 64 } else { 96 }
+    $targetBytes = $TargetMB * 1024 * 1024 * 0.98
+    $vidBitrateK = [int]([math]::Max(5, ($targetBytes * 8 / $dur - $audioBps * 1000) / 1000))
     Write-Host "  Video bitrate: ${vidBitrateK} kbps | Audio: ${audioBps} kbps"
     Write-Host "  Analysis: $([int]((Get-Date)-$t).TotalSeconds)s"
 
@@ -191,8 +74,8 @@ function Invoke-Compress {
     Write-Host ""
     Write-Host "[4] Results"
     if (Test-Path $outputFile) {
-        $outMB  = [math]::Round((Get-Item $outputFile).Length/1MB,2)
-        $ratio  = [math]::Round((Get-Item $outputFile).Length/(Get-Item $InputFile).Length*100,1)
+        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
+        $ratio = [math]::Round((Get-Item $outputFile).Length/(Get-Item $InputFile).Length*100,1)
         Write-Host "  Output : $outputFile"
         Write-Host "  Size   : ${outMB} MB  (target: ${TargetMB} MB,  ${ratio}% of original)"
         if ((Get-Item $outputFile).Length -gt $TargetMB*1024*1024) {
@@ -290,7 +173,9 @@ function Get-CropParams {
         $cW = [int]$Matches[1]; $cH = [int]$Matches[2]; $cX = [int]$Matches[3]; $cY = [int]$Matches[4]
         if ($cH -lt ($origH - 10) -or $cW -lt ($origW - 10)) {
             $found = $true
-            Write-Host "  Found  : crop=${cW}:${cH}:${cX}:${cY}  (removing top=$cY  bottom=$(${origH}-$cY-$cH)  left=$cX  right=$(${origW}-$cX-$cW))"
+            $remBottom = $origH - $cY - $cH
+            $remRight  = $origW - $cX - $cW
+            Write-Host "  Found  : crop=${cW}:${cH}:${cX}:${cY}  (top=$cY  bottom=$remBottom  left=$cX  right=$remRight)"
         } else {
             Write-Host "  None   : no significant black bars found."
         }
@@ -300,3 +185,122 @@ function Get-CropParams {
     Write-Host "  Detection: $([int]((Get-Date)-$t).TotalSeconds)s"
     return $cW, $cH, $cX, $cY, $found
 }
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+$ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot     = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir ".."))
+$FfmpegDir    = Join-Path $RepoRoot "dependencies\ffmpeg"
+$LogDir       = Join-Path $RepoRoot "data\logs"
+$SessionStart = Get-Date
+
+if (-not (Test-Path $InputFile)) {
+    Write-Host "ERROR: File not found: $InputFile"
+    exit 1
+}
+
+$inputDir      = Split-Path -Parent $InputFile
+$inputBase     = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+$outDir        = if ($OutputDir -and $OutputDir.Trim()) { $OutputDir } else { $inputDir }
+$inputSizeMB   = [math]::Round((Get-Item $InputFile).Length / 1MB, 2)
+$quarterSizeMB = [math]::Round($inputSizeMB * 0.25, 2)
+$halfSizeMB    = [math]::Round($inputSizeMB * 0.5, 2)
+
+if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+
+Write-Host ""
+Write-Host "=== FFMPEG Kit ==="
+Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
+Write-Host ""
+Write-Host "  [1] Compress to target size"
+Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
+Write-Host "  [3] Remove black bars only (keep original dimensions)"
+Write-Host ""
+$choice = Read-Host "  Choose (1-3)"
+Write-Host ""
+
+if ($choice -notin @("1","2","3")) {
+    Write-Host "Invalid choice."
+    exit 1
+}
+
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
+$LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+Start-Transcript -Path $LogFile -NoClobber | Out-Null
+
+$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } }
+Write-Host "=== FFMPEG Kit - $toolName ==="
+Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Write-Host "Input   : $InputFile"
+Write-Host ""
+
+# ── Locate FFmpeg ─────────────────────────────────────────────────────────────
+Write-Host "[1] Locating FFmpeg..."
+
+function Find-InDir([string]$Dir, [string]$Name) {
+    $r = Get-ChildItem -Path $Dir -Filter $Name -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($r) { return $r.FullName }; return $null
+}
+
+$ffmpegExe = $null; $ffprobeExe = $null
+
+if (Test-Path $FfmpegDir) {
+    $ffmpegExe  = Find-InDir $FfmpegDir "ffmpeg.exe"
+    $ffprobeExe = Find-InDir $FfmpegDir "ffprobe.exe"
+}
+if (-not $ffmpegExe) {
+    $sysFF = Get-Command "ffmpeg"  -ErrorAction SilentlyContinue
+    $sysFP = Get-Command "ffprobe" -ErrorAction SilentlyContinue
+    if ($sysFF) { $ffmpegExe = $sysFF.Source; $ffprobeExe = if ($sysFP) { $sysFP.Source } else { $null } }
+}
+if (-not $ffmpegExe) {
+    Write-Host "  FFmpeg not found - downloading to $FfmpegDir ..."
+    if (-not (Test-Path $FfmpegDir)) { New-Item -ItemType Directory -Path $FfmpegDir | Out-Null }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $7zExe = $null
+    foreach ($c in @("7z","7za","$env:ProgramFiles\7-Zip\7z.exe","${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if ($c -match '\\') { if (Test-Path $c -EA SilentlyContinue) { $7zExe = $c; break } }
+        else                 { if (Get-Command $c -EA SilentlyContinue) { $7zExe = $c; break } }
+    }
+    if ($7zExe) {
+        $arch = Join-Path $FfmpegDir "ffmpeg-dl.7z"
+        Write-Host "  Downloading 7z archive (~32 MB)..."
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z" -OutFile $arch -UseBasicParsing
+        & $7zExe x $arch "-o$FfmpegDir" -y | Out-Null
+    } else {
+        $arch = Join-Path $FfmpegDir "ffmpeg-dl.zip"
+        Write-Host "  Downloading zip (~80 MB). Install 7-Zip for the smaller archive next time."
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $arch -UseBasicParsing
+        Expand-Archive -Path $arch -DestinationPath $FfmpegDir -Force
+    }
+    $ffmpegExe  = Find-InDir $FfmpegDir "ffmpeg.exe"
+    $ffprobeExe = Find-InDir $FfmpegDir "ffprobe.exe"
+    if (-not $ffmpegExe) { Write-Host "ERROR: ffmpeg.exe not found after download."; Stop-Transcript | Out-Null; exit 1 }
+    Write-Host "  Installed: $ffmpegExe"
+}
+if (-not $ffprobeExe) {
+    $c = $ffmpegExe -replace "ffmpeg\.exe$","ffprobe.exe"
+    if (Test-Path $c) { $ffprobeExe = $c }
+}
+if (-not $ffprobeExe) { Write-Host "ERROR: ffprobe.exe not found."; Stop-Transcript | Out-Null; exit 1 }
+Write-Host "  ffmpeg : $ffmpegExe"
+Write-Host "  ffprobe: $ffprobeExe"
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+switch ($choice) {
+    "1" { Invoke-Compress }
+    "2" { Invoke-LandscapeFill }
+    "3" { Invoke-CropFix }
+}
+
+# ── Finish ────────────────────────────────────────────────────────────────────
+$totalSec = [int]((Get-Date) - $SessionStart).TotalSeconds
+Write-Host ""
+Write-Host "=== Complete ==="
+Write-Host "Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Write-Host "Elapsed : $([int]($totalSec/60))m $($totalSec%60)s"
+Write-Host "Log     : $LogFile"
+Write-Host ""
+Stop-Transcript | Out-Null
