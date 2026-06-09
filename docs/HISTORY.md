@@ -4,6 +4,16 @@ Completed features and settled design decisions.
 
 ---
 
+## FFMPEG-PortraitFix added
+
+New tool: `scripts/portrait-fix/FFMPEG-PortraitFix.ps1` (+ .bat drag-and-drop launcher).
+
+Drag a video onto the .bat, choose:
+- `[1]` Remove black bars - auto-detect with cropdetect, crop-encode, copy audio (fast)
+- `[2]` Landscape blur-fill - crops bars then scales to 1280x720 with blurred background fill (best for PC viewing of portrait/social media videos)
+
+---
+
 ## Local FFmpeg copies deleted from 3 Python repos
 
 SBS_Download and FLAC_Flow had no local copy remaining. RivalsVidMaker's `dependencies/ffmpeg/` deleted. All 3 repos now rely on ffkit's shared copy. Disk deduplication complete on E15.
