@@ -1,5 +1,5 @@
 @echo off
-title FFMPEG Portrait Fix
+title FFMPEG Kit
 
 if "%~1"=="" (
     echo.
@@ -9,5 +9,5 @@ if "%~1"=="" (
     exit
 )
 
-powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0FFMPEG-PortraitFix.ps1" "%~1"
+powershell -ExecutionPolicy Bypass -NoProfile -File "%~dp0FFMPEG-Kit.ps1" "%~1"
 cmd /k
