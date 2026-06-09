@@ -5,8 +5,7 @@ param(
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG - edit once to suit your setup
-$OutputDir = ""   # Empty = output alongside input file
-#                   Example: $OutputDir = "C:\Users\David\Videos\Processed"
+$OutputDir = "C:\Users\David\Videos\Processed"
 # ──────────────────────────────────────────────────────────────────────────────
 
 $ScriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
