@@ -24,5 +24,6 @@ ffkit is David's personal setup - external users of sibling repos won't have it.
 | Path | Purpose |
 |------|---------|
 | `scripts/compress/` | FFMPEG-Compressor - drag and drop to compress video to target size |
+| `scripts/portrait-fix/` | FFMPEG-PortraitFix - remove black bars / convert portrait to landscape blur-fill |
 | `dependencies/ffmpeg/` | FFmpeg binary (gitignored) |
 | `data/logs/` | Timestamped logs from each run |
