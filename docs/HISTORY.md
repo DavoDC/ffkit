@@ -4,13 +4,16 @@ Completed features and settled design decisions.
 
 ---
 
-## FFMPEG-PortraitFix added
+## Consolidated to FFMPEG-Kit
 
-New tool: `scripts/portrait-fix/FFMPEG-PortraitFix.ps1` (+ .bat drag-and-drop launcher).
+All tools merged into `scripts/FFMPEG-Kit.bat` + `scripts/FFMPEG-Kit.ps1`. Deleted the separate `compress/` and `portrait-fix/` subfolders.
 
-Drag a video onto the .bat, choose:
-- `[1]` Remove black bars - auto-detect with cropdetect, crop-encode, copy audio (fast)
-- `[2]` Landscape blur-fill - crops bars then scales to 1280x720 with blurred background fill (best for PC viewing of portrait/social media videos)
+One drag target, three operations:
+- `[1]` Compress to target size (two-pass H.264)
+- `[2]` Portrait to landscape blur-fill (1280x720, removes black bars)
+- `[3]` Remove black bars only
+
+Set `$OutputDir` at top of `FFMPEG-Kit.ps1` to redirect outputs away from the input folder.
 
 ---
 

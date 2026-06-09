@@ -23,7 +23,7 @@ ffkit is David's personal setup - external users of sibling repos won't have it.
 
 | Path | Purpose |
 |------|---------|
-| `scripts/compress/` | FFMPEG-Compressor - drag and drop to compress video to target size |
-| `scripts/portrait-fix/` | FFMPEG-PortraitFix - remove black bars / convert portrait to landscape blur-fill |
+| `scripts/FFMPEG-Kit.bat` | Single drag-and-drop launcher for all tools |
+| `scripts/FFMPEG-Kit.ps1` | Unified tool: compress / landscape blur-fill / remove black bars |
 | `dependencies/ffmpeg/` | FFmpeg binary (gitignored) |
 | `data/logs/` | Timestamped logs from each run |

@@ -6,17 +6,21 @@ FFmpeg tools and a shared FFmpeg location for projects cloned alongside it.
 
 ## Tools
 
-### FFMPEG-Compressor
+### FFMPEG-Kit
 
-Compress a video to a specific target file size using two-pass H.264 encoding.
+One drag-and-drop launcher for all video operations.
 
-**Usage:** Drag and drop a video file onto `scripts/compress/FFMPEG-Compressor.bat`
+**Usage:** Drag and drop a video file onto `scripts/FFMPEG-Kit.bat`, then choose:
 
-- Choose a target size: 4 MB, 6 MB, 8 MB, quarter of original, half of original, or custom
-- Output saved next to the input file as `filename_Xmb.mp4`
-- Logs saved to `data/logs/`
+| Option | What it does |
+|--------|-------------|
+| `[1]` Compress | Two-pass H.264 encode to a target file size (4 MB, 6 MB, 8 MB, custom) |
+| `[2]` Portrait to landscape | Auto-removes black bars, scales to 1280x720 with blurred background fill |
+| `[3]` Remove black bars | Auto-detects and crops embedded black bars, keeps original aspect ratio |
 
-FFmpeg is downloaded automatically on first run.
+Output goes alongside the input file by default. Set `$OutputDir` at the top of `FFMPEG-Kit.ps1` once to redirect all outputs to a fixed folder (e.g. `Videos\Processed`).
+
+Logs saved to `data/logs/`. FFmpeg downloads automatically on first run.
 
 ---
 
