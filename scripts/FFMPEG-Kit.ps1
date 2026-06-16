@@ -1,12 +1,14 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string]$InputFile
+    [string[]]$InputFiles
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CONFIG - edit once to suit your setup
-$OutputDir = ""   # Empty = output alongside input (Downloads stays as output)
+$OutputDir = "$env:USERPROFILE\Downloads"   # Empty = output alongside input
 # ──────────────────────────────────────────────────────────────────────────────
+
+$InputFile = $InputFiles[0]
 
 # ==============================================================================
 # TOOL: Compress to target size
@@ -150,6 +152,106 @@ function Invoke-CropFix {
 
 
 # ==============================================================================
+# TOOL: Trim clip(s) from a single file (visually lossless re-encode)
+# ==============================================================================
+function Invoke-Trim {
+    Write-Host ""
+    Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish."
+    $clips = @()
+    while ($true) {
+        Write-Host ""
+        $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
+        if (-not $s -or -not $s.Trim()) { break }
+        $e = Read-Host "  Clip $($clips.Count + 1) end"
+        if (-not $e -or -not $e.Trim()) { Write-Host "  No end time given - skipping clip."; continue }
+        $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
+    }
+    if ($clips.Count -eq 0) {
+        Write-Host "  No clips entered - nothing to do."
+        Stop-Transcript | Out-Null; exit 0
+    }
+
+    $ext = [System.IO.Path]::GetExtension($InputFile)
+    Write-Host ""
+    Write-Host "[3] Trimming $($clips.Count) clip(s) (re-encode for frame-accurate cuts, visually lossless)..."
+    $t = Get-Date
+    $outFiles = @()
+    for ($i = 0; $i -lt $clips.Count; $i++) {
+        $c = $clips[$i]
+        $suffix = if ($clips.Count -gt 1) { "_clip$($i+1)" } else { "_clip" }
+        $clipFile = Join-Path $outDir "${inputBase}${suffix}${ext}"
+        Write-Host "  Clip $($i+1): $($c.Start) -> $($c.End)"
+        & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -to $c.End `
+            -c:v libx265 -preset slow -crf 16 `
+            -c:a ac3 -b:a 224k "$clipFile"
+        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1)."; Stop-Transcript | Out-Null; exit 1 }
+        $outFiles += $clipFile
+    }
+    Write-Host "  Trim: $([int]((Get-Date)-$t).TotalSeconds)s"
+
+    Write-Host ""
+    Write-Host "[4] Results"
+    foreach ($f in $outFiles) {
+        if (Test-Path $f) {
+            $outMB = [math]::Round((Get-Item $f).Length/1MB,2)
+            Write-Host "  Output : $f  (${outMB} MB)"
+        } else { Write-Host "  ERROR: $f not created." }
+    }
+}
+
+
+# ==============================================================================
+# TOOL: Merge multiple files into one (stream copy if compatible, else re-encode)
+# ==============================================================================
+function Invoke-Merge {
+    if ($InputFiles.Count -lt 2) {
+        Write-Host "  Need 2+ files to merge - drag and drop multiple files onto the launcher."
+        Stop-Transcript | Out-Null; exit 1
+    }
+    $ext        = [System.IO.Path]::GetExtension($InputFiles[0])
+    $outputFile = Join-Path $outDir "${inputBase}_merged${ext}"
+    $tempDir    = Join-Path $env:TEMP "ffkit-merge-$PID"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $listFile   = Join-Path $tempDir "concat.txt"
+    $listLines  = $InputFiles | ForEach-Object { "file '$_'" }
+    Set-Content -Path $listFile -Value $listLines -Encoding ASCII
+
+    Write-Host ""
+    Write-Host "[2] Merging $($InputFiles.Count) file(s)..."
+    Write-Host "  Attempting stream copy (lossless, no re-encode)..."
+    $t = Get-Date
+    & $ffmpegExe -nostdin -y -f concat -safe 0 -i "$listFile" -c copy "$outputFile" 2>$null
+    $copyOk = ($LASTEXITCODE -eq 0) -and (Test-Path $outputFile) -and ((Get-Item $outputFile).Length -gt 0)
+
+    if (-not $copyOk) {
+        Write-Host "  Stream copy failed (mismatched codecs/params) - re-encoding instead..."
+        Remove-Item $outputFile -Force -EA SilentlyContinue
+        $inputArgs = $InputFiles | ForEach-Object { "-i", "`"$_`"" }
+        $n = $InputFiles.Count
+        $concatInputs = (0..($n-1) | ForEach-Object { "[$_`:v:0][$_`:a:0]" }) -join ""
+        $fc = "${concatInputs}concat=n=${n}:v=1:a=1[v][a]"
+        & $ffmpegExe -nostdin -y @($InputFiles | ForEach-Object { @("-i", $_) } | ForEach-Object { $_ }) `
+            -filter_complex $fc -map "[v]" -map "[a]" `
+            -c:v libx265 -preset slow -crf 16 `
+            -c:a ac3 -b:a 224k "$outputFile"
+        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Merge failed."; Remove-Item $tempDir -Recurse -Force -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+    } else {
+        Write-Host "  Stream copy succeeded."
+    }
+    Write-Host "  Merge: $([int]((Get-Date)-$t).TotalSeconds)s"
+    Remove-Item $tempDir -Recurse -Force -EA SilentlyContinue
+
+    Write-Host ""
+    Write-Host "[3] Results"
+    if (Test-Path $outputFile) {
+        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
+        Write-Host "  Output : $outputFile"
+        Write-Host "  Size   : ${outMB} MB  ($($InputFiles.Count) files merged)"
+    } else { Write-Host "  ERROR: Output not created." }
+}
+
+
+# ==============================================================================
 # HELPER: Detect black bars via cropdetect
 # ==============================================================================
 function Get-CropParams {
@@ -196,11 +298,14 @@ $FfmpegDir    = Join-Path $RepoRoot "dependencies\ffmpeg"
 $LogDir       = Join-Path $RepoRoot "data\logs"
 $SessionStart = Get-Date
 
-if (-not (Test-Path $InputFile)) {
-    Write-Host "ERROR: File not found: $InputFile"
-    exit 1
+foreach ($f in $InputFiles) {
+    if (-not (Test-Path $f)) {
+        Write-Host "ERROR: File not found: $f"
+        exit 1
+    }
 }
 
+$multiFile     = $InputFiles.Count -gt 1
 $inputDir      = Split-Path -Parent $InputFile
 $inputBase     = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
 $outDir        = if ($OutputDir -and $OutputDir.Trim()) { $OutputDir } else { $inputDir }
@@ -212,16 +317,26 @@ if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out
 
 Write-Host ""
 Write-Host "=== FFMPEG Kit ==="
-Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
-Write-Host ""
-Write-Host "  [1] Compress to target size"
-Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
-Write-Host "  [3] Remove black bars only (keep original dimensions)"
-Write-Host ""
-$choice = Read-Host "  Choose (1-3)"
+if ($multiFile) {
+    Write-Host "Input : $($InputFiles.Count) files dropped"
+    $InputFiles | ForEach-Object { Write-Host "  - $_" }
+    Write-Host ""
+    Write-Host "  [5] Merge these files into one"
+    Write-Host ""
+    $choice = "5"
+} else {
+    Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
+    Write-Host ""
+    Write-Host "  [1] Compress to target size"
+    Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
+    Write-Host "  [3] Remove black bars only (keep original dimensions)"
+    Write-Host "  [4] Trim clip(s)           (cut one or more sections from this file)"
+    Write-Host ""
+    $choice = Read-Host "  Choose (1-4)"
+}
 Write-Host ""
 
-if ($choice -notin @("1","2","3")) {
+if ($choice -notin @("1","2","3","4","5")) {
     Write-Host "Invalid choice."
     exit 1
 }
@@ -230,7 +345,7 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out
 $LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 Start-Transcript -Path $LogFile -NoClobber | Out-Null
 
-$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } }
+$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } }
 Write-Host "=== FFMPEG Kit - $toolName ==="
 Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Input   : $InputFile"
@@ -323,6 +438,8 @@ switch ($choice) {
     "1" { Invoke-Compress }
     "2" { Invoke-LandscapeFill }
     "3" { Invoke-CropFix }
+    "4" { Invoke-Trim }
+    "5" { Invoke-Merge }
 }
 
 # ── Finish ────────────────────────────────────────────────────────────────────

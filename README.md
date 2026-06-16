@@ -17,8 +17,12 @@ One drag-and-drop launcher for all video operations.
 | `[1]` Compress | Two-pass H.264 encode to a target file size (4 MB, 6 MB, 8 MB, custom) |
 | `[2]` Portrait to landscape | Auto-removes black bars, scales to 1280x720 with blurred background fill |
 | `[3]` Remove black bars | Auto-detects and crops embedded black bars, keeps original aspect ratio |
+| `[4]` Trim clip(s) | Cuts one or more time ranges out of a single file (frame-accurate re-encode, visually lossless) |
+| `[5]` Merge files | Drag and drop 2+ files onto the launcher to join them into one (lossless stream copy when possible, falls back to re-encode) |
 
-Output goes alongside the input file by default. Set `$OutputDir` at the top of `FFMPEG-Kit.ps1` once to redirect all outputs to a fixed folder (e.g. `Videos\Processed`).
+Trim and merge are separate tools by design - trim one clip out of a video, or merge already-trimmed clips, independently of each other.
+
+Output defaults to `%USERPROFILE%\Downloads`. Set `$OutputDir` at the top of `FFMPEG-Kit.ps1` once to redirect all outputs to a different folder.
 
 Logs saved to `data/logs/`. FFmpeg downloads automatically on first run.
 
