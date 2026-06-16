@@ -1,6 +1,12 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string[]]$InputFiles
+    [string[]]$InputFiles,
+
+    # Non-interactive mode: pass these to skip all Read-Host prompts (for scripted/Claude use).
+    # -Action: compress|landscape|cropfix|trim|merge (or "1".."5")
+    [string]$Action = "",
+    [double]$TargetMB = 0,               # for -Action compress
+    [string[]]$ClipArgs = @()            # for -Action trim, e.g. "6:01-6:34","8:54-9:24"
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -9,6 +15,8 @@ $OutputDir = "$env:USERPROFILE\Downloads"   # Empty = output alongside input
 # ──────────────────────────────────────────────────────────────────────────────
 
 $InputFile = $InputFiles[0]
+$ActionMap = @{ "compress"="1"; "landscape"="2"; "cropfix"="3"; "trim"="4"; "merge"="5" }
+$ActionNum = if ($Action -and $ActionMap.ContainsKey($Action.ToLower())) { $ActionMap[$Action.ToLower()] } elseif ($Action) { $Action } else { "" }
 
 # ==============================================================================
 # TOOL: Compress to target size
@@ -26,25 +34,29 @@ function Invoke-Compress {
     Write-Host "  Duration : $durFmt ($([math]::Round($dur,1))s)"
     Write-Host "  Input    : ${inputSizeMB} MB"
 
-    Write-Host ""
-    Write-Host "  Target size:"
-    Write-Host "    [1] 4 MB"
-    Write-Host "    [2] 6 MB"
-    Write-Host "    [3] 8 MB"
-    Write-Host "    [4] Quarter of original (${quarterSizeMB} MB)"
-    Write-Host "    [5] Half of original    (${halfSizeMB} MB)"
-    Write-Host "    [6] Custom MB"
-    Write-Host ""
-    $sc = Read-Host "  Choose (1-6)"
-    $TargetMB = switch ($sc.Trim()) {
-        "1" { 4 } "2" { 6 } "3" { 8 }
-        "4" { $quarterSizeMB } "5" { $halfSizeMB }
-        "6" {
-            $cv = Read-Host "  Enter target MB"
-            $cm = 0.0
-            if ([double]::TryParse($cv,[ref]$cm) -and $cm -gt 0) { $cm } else { Write-Host "  Invalid - using 4 MB."; 4 }
+    if ($TargetMB -gt 0) {
+        Write-Host "  Target size: ${TargetMB} MB (from -TargetMB)"
+    } else {
+        Write-Host ""
+        Write-Host "  Target size:"
+        Write-Host "    [1] 4 MB"
+        Write-Host "    [2] 6 MB"
+        Write-Host "    [3] 8 MB"
+        Write-Host "    [4] Quarter of original (${quarterSizeMB} MB)"
+        Write-Host "    [5] Half of original    (${halfSizeMB} MB)"
+        Write-Host "    [6] Custom MB"
+        Write-Host ""
+        $sc = Read-Host "  Choose (1-6)"
+        $TargetMB = switch ($sc.Trim()) {
+            "1" { 4 } "2" { 6 } "3" { 8 }
+            "4" { $quarterSizeMB } "5" { $halfSizeMB }
+            "6" {
+                $cv = Read-Host "  Enter target MB"
+                $cm = 0.0
+                if ([double]::TryParse($cv,[ref]$cm) -and $cm -gt 0) { $cm } else { Write-Host "  Invalid - using 4 MB."; 4 }
+            }
+            default { Write-Host "  Invalid - using 4 MB."; 4 }
         }
-        default { Write-Host "  Invalid - using 4 MB."; 4 }
     }
     Write-Host ""
 
@@ -75,12 +87,12 @@ function Invoke-Compress {
 
     Write-Host ""
     Write-Host "[4] Results"
-    if (Test-Path $outputFile) {
-        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
-        $ratio = [math]::Round((Get-Item $outputFile).Length/(Get-Item $InputFile).Length*100,1)
+    if (Test-Path -LiteralPath $outputFile) {
+        $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
+        $ratio = [math]::Round((Get-Item -LiteralPath $outputFile).Length/(Get-Item -LiteralPath $InputFile).Length*100,1)
         Write-Host "  Output : $outputFile"
         Write-Host "  Size   : ${outMB} MB  (target: ${TargetMB} MB,  ${ratio}% of original)"
-        if ((Get-Item $outputFile).Length -gt $TargetMB*1024*1024) {
+        if ((Get-Item -LiteralPath $outputFile).Length -gt $TargetMB*1024*1024) {
             Write-Host "  NOTE   : Slightly over limit (container overhead)."
         }
     } else { Write-Host "  ERROR: Output not created." }
@@ -112,8 +124,8 @@ function Invoke-LandscapeFill {
 
     Write-Host ""
     Write-Host "[4] Results"
-    if (Test-Path $outputFile) {
-        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
+    if (Test-Path -LiteralPath $outputFile) {
+        $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
         Write-Host "  Output : $outputFile"
         Write-Host "  Size   : ${outMB} MB  (1280x720 landscape)"
     } else { Write-Host "  ERROR: Output not created." }
@@ -143,8 +155,8 @@ function Invoke-CropFix {
 
     Write-Host ""
     Write-Host "[4] Results"
-    if (Test-Path $outputFile) {
-        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
+    if (Test-Path -LiteralPath $outputFile) {
+        $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
         Write-Host "  Output : $outputFile"
         Write-Host "  Size   : ${outMB} MB  (${cropW}x${cropH})"
     } else { Write-Host "  ERROR: Output not created." }
@@ -155,16 +167,27 @@ function Invoke-CropFix {
 # TOOL: Trim clip(s) from a single file (visually lossless re-encode)
 # ==============================================================================
 function Invoke-Trim {
-    Write-Host ""
-    Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish."
     $clips = @()
-    while ($true) {
+    if ($ClipArgs.Count -gt 0) {
         Write-Host ""
-        $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
-        if (-not $s -or -not $s.Trim()) { break }
-        $e = Read-Host "  Clip $($clips.Count + 1) end"
-        if (-not $e -or -not $e.Trim()) { Write-Host "  No end time given - skipping clip."; continue }
-        $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
+        Write-Host "[2] Using clips from -ClipArgs argument:"
+        foreach ($c in $ClipArgs) {
+            $parts = $c -split '-'
+            if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$c' - expected 'start-end'."; Stop-Transcript | Out-Null; exit 1 }
+            Write-Host "  $($parts[0].Trim()) -> $($parts[1].Trim())"
+            $clips += [PSCustomObject]@{ Start = $parts[0].Trim(); End = $parts[1].Trim() }
+        }
+    } else {
+        Write-Host ""
+        Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish."
+        while ($true) {
+            Write-Host ""
+            $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
+            if (-not $s -or -not $s.Trim()) { break }
+            $e = Read-Host "  Clip $($clips.Count + 1) end"
+            if (-not $e -or -not $e.Trim()) { Write-Host "  No end time given - skipping clip."; continue }
+            $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
+        }
     }
     if ($clips.Count -eq 0) {
         Write-Host "  No clips entered - nothing to do."
@@ -192,8 +215,8 @@ function Invoke-Trim {
     Write-Host ""
     Write-Host "[4] Results"
     foreach ($f in $outFiles) {
-        if (Test-Path $f) {
-            $outMB = [math]::Round((Get-Item $f).Length/1MB,2)
+        if (Test-Path -LiteralPath $f) {
+            $outMB = [math]::Round((Get-Item -LiteralPath $f).Length/1MB,2)
             Write-Host "  Output : $f  (${outMB} MB)"
         } else { Write-Host "  ERROR: $f not created." }
     }
@@ -221,11 +244,11 @@ function Invoke-Merge {
     Write-Host "  Attempting stream copy (lossless, no re-encode)..."
     $t = Get-Date
     & $ffmpegExe -nostdin -y -f concat -safe 0 -i "$listFile" -c copy "$outputFile" 2>$null
-    $copyOk = ($LASTEXITCODE -eq 0) -and (Test-Path $outputFile) -and ((Get-Item $outputFile).Length -gt 0)
+    $copyOk = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath $outputFile) -and ((Get-Item -LiteralPath $outputFile).Length -gt 0)
 
     if (-not $copyOk) {
         Write-Host "  Stream copy failed (mismatched codecs/params) - re-encoding instead..."
-        Remove-Item $outputFile -Force -EA SilentlyContinue
+        Remove-Item -LiteralPath $outputFile -Force -EA SilentlyContinue
         $inputArgs = $InputFiles | ForEach-Object { "-i", "`"$_`"" }
         $n = $InputFiles.Count
         $concatInputs = (0..($n-1) | ForEach-Object { "[$_`:v:0][$_`:a:0]" }) -join ""
@@ -243,8 +266,8 @@ function Invoke-Merge {
 
     Write-Host ""
     Write-Host "[3] Results"
-    if (Test-Path $outputFile) {
-        $outMB = [math]::Round((Get-Item $outputFile).Length/1MB,2)
+    if (Test-Path -LiteralPath $outputFile) {
+        $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
         Write-Host "  Output : $outputFile"
         Write-Host "  Size   : ${outMB} MB  ($($InputFiles.Count) files merged)"
     } else { Write-Host "  ERROR: Output not created." }
@@ -299,7 +322,7 @@ $LogDir       = Join-Path $RepoRoot "data\logs"
 $SessionStart = Get-Date
 
 foreach ($f in $InputFiles) {
-    if (-not (Test-Path $f)) {
+    if (-not (Test-Path -LiteralPath $f)) {
         Write-Host "ERROR: File not found: $f"
         exit 1
     }
@@ -309,7 +332,7 @@ $multiFile     = $InputFiles.Count -gt 1
 $inputDir      = Split-Path -Parent $InputFile
 $inputBase     = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
 $outDir        = if ($OutputDir -and $OutputDir.Trim()) { $OutputDir } else { $inputDir }
-$inputSizeMB   = [math]::Round((Get-Item $InputFile).Length / 1MB, 2)
+$inputSizeMB   = [math]::Round((Get-Item -LiteralPath $InputFile).Length / 1MB, 2)
 $quarterSizeMB = [math]::Round($inputSizeMB * 0.25, 2)
 $halfSizeMB    = [math]::Round($inputSizeMB * 0.5, 2)
 
@@ -320,10 +343,11 @@ Write-Host "=== FFMPEG Kit ==="
 if ($multiFile) {
     Write-Host "Input : $($InputFiles.Count) files dropped"
     $InputFiles | ForEach-Object { Write-Host "  - $_" }
-    Write-Host ""
-    Write-Host "  [5] Merge these files into one"
-    Write-Host ""
-    $choice = "5"
+    $choice = if ($ActionNum) { $ActionNum } else { "5" }
+} elseif ($ActionNum) {
+    Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
+    Write-Host "Action: $ActionNum (from -Action argument)"
+    $choice = $ActionNum
 } else {
     Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
     Write-Host ""
