@@ -264,17 +264,47 @@ if (-not $ffmpegExe) {
         if ($c -match '\\') { if (Test-Path $c -EA SilentlyContinue) { $7zExe = $c; break } }
         else                 { if (Get-Command $c -EA SilentlyContinue) { $7zExe = $c; break } }
     }
-    if ($7zExe) {
-        $arch = Join-Path $FfmpegDir "ffmpeg-dl.7z"
-        Write-Host "  Downloading 7z archive (~32 MB)..."
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z" -OutFile $arch -UseBasicParsing
-        & $7zExe x $arch "-o$FfmpegDir" -y | Out-Null
-    } else {
-        $arch = Join-Path $FfmpegDir "ffmpeg-dl.zip"
-        Write-Host "  Downloading zip (~80 MB). Install 7-Zip for the smaller archive next time."
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $arch -UseBasicParsing
-        Expand-Archive -Path $arch -DestinationPath $FfmpegDir -Force
+    $curlExe = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    $oldProgressPref = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    function Get-File([string]$Url, [string]$Dest) {
+        if ($curlExe) { & $curlExe.Source -L --fail -o $Dest $Url 2>$null; return $LASTEXITCODE -eq 0 }
+        try { Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing; return $true } catch { return $false }
     }
+    function Get-LatestAssetUrl([string]$Repo, [string]$NamePattern) {
+        $api = "https://api.github.com/repos/$Repo/releases/latest"
+        try {
+            $json = if ($curlExe) { & $curlExe.Source -s -L --fail $api } else { (Invoke-WebRequest -Uri $api -UseBasicParsing).Content }
+            $asset = ($json | ConvertFrom-Json).assets | Where-Object { $_.name -match $NamePattern } | Select-Object -First 1
+            if ($asset) { return $asset.browser_download_url }
+        } catch {}
+        return $null
+    }
+    # GyanD/codexffmpeg mirrors gyan.dev's small "essentials" build (~32 MB, includes libx264) as a
+    # GitHub release - same small size, GitHub's fast CDN instead of gyan.dev's slow server.
+    $ext = if ($7zExe) { "7z" } else { "zip" }
+    $arch = Join-Path $FfmpegDir "ffmpeg-dl.$ext"
+    Write-Host "  Downloading from GitHub mirror (GyanD/codexffmpeg essentials, ~32 MB)..."
+    $dlStart = Get-Date
+    $assetUrl = Get-LatestAssetUrl "GyanD/codexffmpeg" "essentials_build\.$ext$"
+    $ok = $false
+    if ($assetUrl) { $ok = Get-File $assetUrl $arch }
+    if (-not $ok) {
+        Write-Host "  GitHub mirror unavailable - falling back to gyan.dev (slower)..."
+        $arch = Join-Path $FfmpegDir "ffmpeg-dl.$ext"
+        $ok = Get-File "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.$ext" $arch
+    }
+    if (-not $ok) { Write-Host "ERROR: could not download FFmpeg from any source."; Stop-Transcript | Out-Null; exit 1 }
+    $dlSecs = [math]::Round(((Get-Date) - $dlStart).TotalSeconds, 1)
+    Write-Host "  Download took: ${dlSecs}s"
+    $extractDir = Join-Path $FfmpegDir "_extract"
+    if ($7zExe) { & $7zExe x $arch "-o$extractDir" -y | Out-Null } else { Expand-Archive -Path $arch -DestinationPath $extractDir -Force }
+    $ProgressPreference = $oldProgressPref
+    # Flatten: move bin/ contents straight into $FfmpegDir, discard the rest (docs/license/src not needed).
+    $binDir = Find-InDir $extractDir "ffmpeg.exe" | Split-Path -Parent
+    Get-ChildItem -Path $binDir | Move-Item -Destination $FfmpegDir -Force
+    Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $arch -Force -ErrorAction SilentlyContinue
     $ffmpegExe  = Find-InDir $FfmpegDir "ffmpeg.exe"
     $ffprobeExe = Find-InDir $FfmpegDir "ffprobe.exe"
     if (-not $ffmpegExe) { Write-Host "ERROR: ffmpeg.exe not found after download."; Stop-Transcript | Out-Null; exit 1 }
