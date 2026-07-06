@@ -3,7 +3,7 @@ param(
     [string[]]$InputFiles,
 
     # Non-interactive mode: pass these to skip all Read-Host prompts (for scripted/Claude use).
-    # -Action: compress|landscape|cropfix|trim|merge (or "1".."5")
+    # -Action: compress|landscape|cropfix|trim|merge|mp3 (or "1".."6")
     [string]$Action = "",
     [double]$TargetMB = 0,               # for -Action compress
     [string[]]$ClipArgs = @()            # for -Action trim, e.g. "6:01-6:34","8:54-9:24"
@@ -15,7 +15,7 @@ $OutputDir = "$env:USERPROFILE\Downloads"   # Empty = output alongside input
 # ──────────────────────────────────────────────────────────────────────────────
 
 $InputFile = $InputFiles[0]
-$ActionMap = @{ "compress"="1"; "landscape"="2"; "cropfix"="3"; "trim"="4"; "merge"="5" }
+$ActionMap = @{ "compress"="1"; "landscape"="2"; "cropfix"="3"; "trim"="4"; "merge"="5"; "mp3"="6" }
 $ActionNum = if ($Action -and $ActionMap.ContainsKey($Action.ToLower())) { $ActionMap[$Action.ToLower()] } elseif ($Action) { $Action } else { "" }
 
 # ==============================================================================
@@ -275,6 +275,29 @@ function Invoke-Merge {
 
 
 # ==============================================================================
+# TOOL: Convert any format to MP3 (audio-only, VBR high quality)
+# ==============================================================================
+function Invoke-ConvertMp3 {
+    $outputFile = Join-Path $outDir "${inputBase}.mp3"
+    Write-Host ""
+    Write-Host "[2] Converting to MP3..."
+    $t = Get-Date
+
+    & $ffmpegExe -nostdin -y -i "$InputFile" -vn -c:a libmp3lame -q:a 0 "$outputFile"
+    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Conversion failed."; Stop-Transcript | Out-Null; exit 1 }
+    Write-Host "  Convert: $([int]((Get-Date)-$t).TotalSeconds)s"
+
+    Write-Host ""
+    Write-Host "[3] Results"
+    if (Test-Path -LiteralPath $outputFile) {
+        $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
+        Write-Host "  Output : $outputFile"
+        Write-Host "  Size   : ${outMB} MB  (MP3, VBR ~245kbps avg)"
+    } else { Write-Host "  ERROR: Output not created." }
+}
+
+
+# ==============================================================================
 # HELPER: Detect black bars via cropdetect
 # ==============================================================================
 function Get-CropParams {
@@ -355,12 +378,13 @@ if ($multiFile) {
     Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
     Write-Host "  [3] Remove black bars only (keep original dimensions)"
     Write-Host "  [4] Trim clip(s)           (cut one or more sections from this file)"
+    Write-Host "  [6] Convert to MP3         (any format - audio-only, VBR high quality)"
     Write-Host ""
-    $choice = Read-Host "  Choose (1-4)"
+    $choice = Read-Host "  Choose (1-4, 6)"
 }
 Write-Host ""
 
-if ($choice -notin @("1","2","3","4","5")) {
+if ($choice -notin @("1","2","3","4","5","6")) {
     Write-Host "Invalid choice."
     exit 1
 }
@@ -369,7 +393,7 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out
 $LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 Start-Transcript -Path $LogFile -NoClobber | Out-Null
 
-$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } }
+$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } "6" { "Convert to MP3" } }
 Write-Host "=== FFMPEG Kit - $toolName ==="
 Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Input   : $InputFile"
@@ -464,6 +488,7 @@ switch ($choice) {
     "3" { Invoke-CropFix }
     "4" { Invoke-Trim }
     "5" { Invoke-Merge }
+    "6" { Invoke-ConvertMp3 }
 }
 
 # ── Finish ────────────────────────────────────────────────────────────────────
