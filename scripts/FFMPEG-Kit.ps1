@@ -6,7 +6,8 @@ param(
     # -Action: compress|landscape|cropfix|trim|merge|mp3 (or "1".."6")
     [string]$Action = "",
     [double]$TargetMB = 0,               # for -Action compress
-    [string[]]$ClipArgs = @()            # for -Action trim, e.g. "6:01-6:34","8:54-9:24"
+    [string[]]$ClipArgs = @()            # for -Action trim, e.g. "6:01-6:34","8:54-9:24" (blank end = "to end of file", e.g. "20:55-")
+    [string]$TrimMode = "fast"           # for -Action trim: "fast" (stream copy, keyframe-accurate, seconds) or "precise" (re-encode, frame-accurate, slow)
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -172,20 +173,20 @@ function Invoke-Trim {
         Write-Host ""
         Write-Host "[2] Using clips from -ClipArgs argument:"
         foreach ($c in $ClipArgs) {
-            $parts = $c -split '-'
-            if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$c' - expected 'start-end'."; Stop-Transcript | Out-Null; exit 1 }
-            Write-Host "  $($parts[0].Trim()) -> $($parts[1].Trim())"
+            $parts = $c -split '-', 2
+            if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$c' - expected 'start-end' (blank end = to EOF)."; Stop-Transcript | Out-Null; exit 1 }
+            $endLabel = if ($parts[1].Trim()) { $parts[1].Trim() } else { "(end of file)" }
+            Write-Host "  $($parts[0].Trim()) -> $endLabel"
             $clips += [PSCustomObject]@{ Start = $parts[0].Trim(); End = $parts[1].Trim() }
         }
     } else {
         Write-Host ""
-        Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish."
+        Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish, blank end = to EOF."
         while ($true) {
             Write-Host ""
             $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
             if (-not $s -or -not $s.Trim()) { break }
-            $e = Read-Host "  Clip $($clips.Count + 1) end"
-            if (-not $e -or -not $e.Trim()) { Write-Host "  No end time given - skipping clip."; continue }
+            $e = Read-Host "  Clip $($clips.Count + 1) end (blank = to end of file)"
             $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
         }
     }
@@ -195,18 +196,33 @@ function Invoke-Trim {
     }
 
     $ext = [System.IO.Path]::GetExtension($InputFile)
+    $modeDesc = if ($TrimMode -eq "fast") { "stream copy, keyframe-accurate, no re-encode" } else { "re-encode, frame-accurate, visually lossless" }
     Write-Host ""
-    Write-Host "[3] Trimming $($clips.Count) clip(s) (re-encode for frame-accurate cuts, visually lossless)..."
+    Write-Host "[3] Trimming $($clips.Count) clip(s) ($modeDesc)..."
     $t = Get-Date
     $outFiles = @()
     for ($i = 0; $i -lt $clips.Count; $i++) {
         $c = $clips[$i]
         $suffix = if ($clips.Count -gt 1) { "_clip$($i+1)" } else { "_clip" }
         $clipFile = Join-Path $outDir "${inputBase}${suffix}${ext}"
-        Write-Host "  Clip $($i+1): $($c.Start) -> $($c.End)"
-        & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -to $c.End `
-            -c:v libx265 -preset slow -crf 16 `
-            -c:a ac3 -b:a 224k "$clipFile"
+        $endLabel = if ($c.End) { $c.End } else { "EOF" }
+        Write-Host "  Clip $($i+1): $($c.Start) -> $endLabel"
+        if ($TrimMode -eq "fast") {
+            # Input seeking (-ss before -i) + stream copy: near-instant, no quality loss.
+            # Cut lands on the nearest keyframe at/before the requested start (usually within ~1-2s for typical GOP sizes).
+            if ($c.End) {
+                & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -to $c.End -c copy -avoid_negative_ts make_zero "$clipFile"
+            } else {
+                & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -c copy -avoid_negative_ts make_zero "$clipFile"
+            }
+        } else {
+            # Output seeking (-ss after -i) + re-encode: exact frame cut, but decodes from the start of the file - slow on large files.
+            if ($c.End) {
+                & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -to $c.End -c:v libx265 -preset slow -crf 16 -c:a ac3 -b:a 224k "$clipFile"
+            } else {
+                & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -c:v libx265 -preset slow -crf 16 -c:a ac3 -b:a 224k "$clipFile"
+            }
+        }
         if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1)."; Stop-Transcript | Out-Null; exit 1 }
         $outFiles += $clipFile
     }

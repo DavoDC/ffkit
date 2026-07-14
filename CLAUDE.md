@@ -27,6 +27,21 @@ FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (
 
 ffkit is a personal setup - external users of sibling repos won't have it. **Never mention ffkit in any public-facing README** of repos that use it (unless that repo explicitly cross-references ffkit as a sibling tool). Only these internal surfaces may mention it by default: `CLAUDE.md` and `dependencies/ffmpeg/README.md`. The hub behavior is transparent (silent fallback) - external users need no awareness of it.
 
+## Trim efficiency: fast (stream copy) vs precise (re-encode)
+
+`-Action trim` defaults to `-TrimMode fast`: input-seek (`-ss` before `-i`) + `-c copy`, no re-encode.
+For a simple cut (e.g. "give me everything from 20:55 onward" on an 8GB file) this takes seconds,
+not minutes, because no frames are decoded/encoded - the container is just re-muxed. Cut lands on
+the nearest keyframe at/before the requested time (usually within ~1-2s), not frame-exact.
+
+Use `-TrimMode precise` only when the cut point must be frame-exact (e.g. trimming mid-scene for a
+highlight reel) - it re-encodes with libx265, which is much slower on large files since ffmpeg has
+to decode from the start of the file to seek accurately.
+
+Blank end in `-ClipArgs` (e.g. `"20:55-"`) trims to end of file - no need to know/pass the duration.
+
+Example: `.\FFMPEG-Kit.ps1 -InputFiles "video.mp4" -Action trim -ClipArgs "20:55-"`
+
 ## Key paths
 
 | Path | Purpose |

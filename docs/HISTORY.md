@@ -17,6 +17,17 @@ Set `$OutputDir` at top of `FFMPEG-Kit.ps1` to redirect outputs away from the in
 
 ---
 
+## Trim tool: fast stream-copy mode added
+
+Raised 2026-07-14: trimming the last chunk off an 8GB video with the original re-encode-only
+`Invoke-Trim` would have taken many minutes (output seeking - decodes from file start). Added
+`-TrimMode fast` (default): input seeking (`-ss` before `-i`) + `-c copy`, no re-encode - same
+8GB trim now takes ~18s. Also: blank end in a clip arg (e.g. `"20:55-"`) now means "to end of
+file", so duration doesn't need to be looked up first. `-TrimMode precise` keeps the old
+re-encode behavior for when frame-exact cuts matter more than speed.
+
+---
+
 ## Local FFmpeg copies deleted from 3 Python repos
 
 SBS_Download and FLAC_Flow had no local copy remaining. RivalsVidMaker's `dependencies/ffmpeg/` deleted. All 3 repos now rely on ffkit's shared copy. Disk deduplication complete on E15.
