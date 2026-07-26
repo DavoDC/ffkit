@@ -6,7 +6,7 @@ param(
     # -Action: compress|landscape|cropfix|trim|merge|mp3 (or "1".."6")
     [string]$Action = "",
     [double]$TargetMB = 0,               # for -Action compress
-    [string[]]$ClipArgs = @()            # for -Action trim, e.g. "6:01-6:34","8:54-9:24" (blank end = "to end of file", e.g. "20:55-")
+    [string[]]$ClipArgs = @(),           # for -Action trim, e.g. "6:01-6:34","8:54-9:24" (blank end = "to end of file", e.g. "20:55-")
     [string]$TrimMode = "fast"           # for -Action trim: "fast" (stream copy, keyframe-accurate, seconds) or "precise" (re-encode, frame-accurate, slow)
 )
 
