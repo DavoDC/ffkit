@@ -4,6 +4,56 @@ Completed features and settled design decisions.
 
 ---
 
+## Multi-file drag-drop arg-binding bug fixed
+
+`FFMPEG-Kit.bat` passes dropped files as bare positional args (`%*`).
+`$InputFiles` (string[]) wasn't the last positional parameter in
+`FFMPEG-Kit.ps1` (`$Action`, `$TargetMB`, etc. followed it), so PowerShell's
+binder assigned only the *first* file to `-InputFiles` and shoved the
+*second* file path straight into `-Action` - producing "Action:
+...mp4 (from -Action argument)" / "Invalid choice." on any 2+ file drop.
+
+Fixed (2026-09-07) with `[Parameter(Position=0, ValueFromRemainingArguments=$true)]`
+on `$InputFiles` - `ValueFromRemainingArguments` alone was insufficient
+(tested empirically): a second bare arg still leaked into `$Action`/`$TargetMB`
+without `Position=0` pinned alongside it. Verified with a real multi-arg
+invocation, not just a manual `-InputFiles a,b` call.
+
+---
+
+## Concise terminal progress for ffmpeg calls (log stays full)
+
+Root cause: every `& $ffmpegExe ...` call was unredirected, and
+`Start-Transcript` captured whatever hit the console - so the interactive
+terminal and the log file were served by the *same* stream, which is why
+suppressing terminal noise without a real fix would also gut the log.
+
+Implemented (2026-09-07): a shared `Invoke-FfmpegWithProgress` helper runs
+ffmpeg via `System.Diagnostics.Process`/`ProcessStartInfo` with
+`-loglevel error -progress pipe:1`, rendering a single self-overwriting
+terminal line (`\r`) like `Encoding: 42% (00:31/01:13, 2.1x)`. ffmpeg's raw
+diagnostic stderr goes to a sibling `<logname>_ffmpeg.log` file instead of
+the transcript log (`Start-Transcript` holds an exclusive handle on the
+transcript for the whole run - confirmed empirically that a second process
+appending to it, via either native `2>>` or `Add-Content`, throws). Only
+calls that actually take long enough to matter are wrapped: compress
+passes, landscape blur, cropfix re-encode, merge re-encode fallback,
+cropdetect scan. Stream-copy paths (trim fast-mode, merge stream-copy) keep
+a plain one-line status.
+
+Two additional bugs found and fixed along the way: `ProcessStartInfo.ArgumentList`
+returns `$null` on this machine's Windows PowerShell 5.1/.NET Framework build,
+so arguments are built as a single Win32-escaped string via a new
+`ConvertTo-QuotedArg` helper instead. And native `2>>` redirection writes
+UTF-16 while `Add-Content`'s default encoding is single-byte - mixing both
+against the same sibling log file garbled it, so every write to the raw
+ffmpeg log now goes through `2>&1` capture + `Add-Content` consistently.
+
+Deliberately not built: a generic pluggable verbosity/config system,
+colored/unicode progress bars.
+
+---
+
 ## Multi-file batch flows - per-file actions, not just forced merge
 
 From /think + /aristotle (2026-09-07), implemented same day. Previously N>1
