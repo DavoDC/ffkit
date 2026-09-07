@@ -169,44 +169,81 @@ function Invoke-FfmpegWithProgress {
 }
 
 # ==============================================================================
+# HELPER: Target-MB selection for Invoke-Compress - split out so the batch
+# plan phase can ask this same question up front for each queued job (see
+# IDEAS.md "Multi-file batch flows"), without duplicating the prompt text.
+# ==============================================================================
+function Read-TargetMBInteractive {
+    param(
+        [double]$QuarterSizeMB = 0,
+        [double]$HalfSizeMB = 0
+    )
+    Write-Host ""
+    Write-Host "  Target size:"
+    Write-Host "    [1] 4 MB"
+    Write-Host "    [2] 6 MB"
+    Write-Host "    [3] 8 MB"
+    Write-Host "    [4] Quarter of original (${QuarterSizeMB} MB)"
+    Write-Host "    [5] Half of original    (${HalfSizeMB} MB)"
+    Write-Host "    [6] Custom MB"
+    Write-Host ""
+    $sc = Read-Host "  Choose (1-6)"
+    $result = switch ($sc.Trim()) {
+        "1" { 4 } "2" { 6 } "3" { 8 }
+        "4" { $QuarterSizeMB } "5" { $HalfSizeMB }
+        "6" {
+            $cv = Read-Host "  Enter target MB"
+            $cm = 0.0
+            if ([double]::TryParse($cv,[ref]$cm) -and $cm -gt 0) { $cm } else { Write-Host "  Invalid - using 4 MB."; 4 }
+        }
+        default { Write-Host "  Invalid - using 4 MB."; 4 }
+    }
+    return $result
+}
+
+# ==============================================================================
 # TOOL: Compress to target size
+#
+# Takes the file/output-location/sizing values explicitly (rather than closing
+# over module-level globals) so the same body can run for the single-file (N=1)
+# path AND per-job inside a queued batch (see IDEAS.md "Multi-file batch flows").
+# -TargetMB is the raw CLI override (prints "(from -TargetMB)", same as before);
+# -ResolvedTargetMB is a value already decided during the batch plan phase (skips
+# both the CLI-override branch and the interactive menu). -Quiet suppresses the
+# "[4] Results" printing so a batch caller can collect+print a consolidated block
+# instead - the returned result object carries the same data either way.
 # ==============================================================================
 function Invoke-Compress {
+    param(
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutDir,
+        [Parameter(Mandatory=$true)][string]$InputBase,
+        [double]$InputSizeMB = 0,
+        [double]$QuarterSizeMB = 0,
+        [double]$HalfSizeMB = 0,
+        [double]$TargetMB = 0,
+        [double]$ResolvedTargetMB = 0,
+        [switch]$Quiet
+    )
     Write-Host ""
     Write-Host "[2] Analysing duration..."
     $t = Get-Date
     $rawDur = (& $ffprobeExe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$InputFile" 2>&1 | Out-String).Trim()
     [double]$dur = 0.0
     if (-not [double]::TryParse($rawDur,[ref]$dur) -or $dur -le 0) {
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Cannot read video duration."; Outputs=@(); Lines=@() } }
         Write-Host "ERROR: Cannot read video duration."; Stop-Transcript | Out-Null; exit 1
     }
     $durFmt = [TimeSpan]::FromSeconds($dur).ToString("hh\:mm\:ss")
     Write-Host "  Duration : $durFmt ($([math]::Round($dur,1))s)"
-    Write-Host "  Input    : ${inputSizeMB} MB"
+    Write-Host "  Input    : ${InputSizeMB} MB"
 
-    if ($TargetMB -gt 0) {
+    if ($ResolvedTargetMB -gt 0) {
+        $TargetMB = $ResolvedTargetMB
+    } elseif ($TargetMB -gt 0) {
         Write-Host "  Target size: ${TargetMB} MB (from -TargetMB)"
     } else {
-        Write-Host ""
-        Write-Host "  Target size:"
-        Write-Host "    [1] 4 MB"
-        Write-Host "    [2] 6 MB"
-        Write-Host "    [3] 8 MB"
-        Write-Host "    [4] Quarter of original (${quarterSizeMB} MB)"
-        Write-Host "    [5] Half of original    (${halfSizeMB} MB)"
-        Write-Host "    [6] Custom MB"
-        Write-Host ""
-        $sc = Read-Host "  Choose (1-6)"
-        $TargetMB = switch ($sc.Trim()) {
-            "1" { 4 } "2" { 6 } "3" { 8 }
-            "4" { $quarterSizeMB } "5" { $halfSizeMB }
-            "6" {
-                $cv = Read-Host "  Enter target MB"
-                $cm = 0.0
-                if ([double]::TryParse($cv,[ref]$cm) -and $cm -gt 0) { $cm } else { Write-Host "  Invalid - using 4 MB."; 4 }
-            }
-            default { Write-Host "  Invalid - using 4 MB."; 4 }
-        }
+        $TargetMB = Read-TargetMBInteractive -QuarterSizeMB $QuarterSizeMB -HalfSizeMB $HalfSizeMB
     }
     Write-Host ""
 
@@ -216,7 +253,7 @@ function Invoke-Compress {
     Write-Host "  Video bitrate: ${vidBitrateK} kbps | Audio: ${audioBps} kbps"
     Write-Host "  Analysis: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    $outputFile = Join-Path $outDir "${inputBase}_${TargetMB}mb.mp4"
+    $outputFile = Join-Path $OutDir "${InputBase}_${TargetMB}mb.mp4"
     $passlog    = Join-Path $env:TEMP "ffkit-pass-$PID"
 
     Write-Host ""
@@ -225,27 +262,38 @@ function Invoke-Compress {
     $p1Args = @("-nostdin","-y","-i",$InputFile,"-c:v","libx264","-preset","slow","-profile:v","high",
                 "-b:v","${vidBitrateK}k","-pass","1","-passlogfile",$passlog,"-an","-f","null","NUL")
     $r1 = Invoke-FfmpegWithProgress -FfmpegArgs $p1Args -DurationSec $dur -Label "Pass 1/2"
-    if ($r1.ExitCode -ne 0) { Write-Host "ERROR: Pass 1 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+    if ($r1.ExitCode -ne 0) {
+        Remove-Item "${passlog}*" -EA SilentlyContinue
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Pass 1 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+        Write-Host "ERROR: Pass 1 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+    }
 
     $p2Args = @("-nostdin","-y","-i",$InputFile,"-c:v","libx264","-preset","slow","-profile:v","high",
                 "-b:v","${vidBitrateK}k","-pass","2","-passlogfile",$passlog,
                 "-c:a","aac","-b:a","${audioBps}k","-af","aresample=async=1","-movflags","+faststart",$outputFile)
     $r2 = Invoke-FfmpegWithProgress -FfmpegArgs $p2Args -DurationSec $dur -Label "Pass 2/2"
-    if ($r2.ExitCode -ne 0) { Write-Host "ERROR: Pass 2 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+    if ($r2.ExitCode -ne 0) {
+        Remove-Item "${passlog}*" -EA SilentlyContinue
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Pass 2 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+        Write-Host "ERROR: Pass 2 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+    }
     Remove-Item "${passlog}*" -EA SilentlyContinue
     Write-Host "  Encode: $([int]((Get-Date)-$t3).TotalSeconds)s"
 
-    Write-Host ""
-    Write-Host "[4] Results"
-    if (Test-Path -LiteralPath $outputFile) {
+    if (-not $Quiet) { Write-Host ""; Write-Host "[4] Results" }
+    $lines = @()
+    $success = Test-Path -LiteralPath $outputFile
+    if ($success) {
         $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
         $ratio = [math]::Round((Get-Item -LiteralPath $outputFile).Length/(Get-Item -LiteralPath $InputFile).Length*100,1)
-        Write-Host "  Output : $outputFile"
-        Write-Host "  Size   : ${outMB} MB  (target: ${TargetMB} MB,  ${ratio}% of original)"
+        $lines += "Output : $outputFile"
+        $lines += "Size   : ${outMB} MB  (target: ${TargetMB} MB,  ${ratio}% of original)"
         if ((Get-Item -LiteralPath $outputFile).Length -gt $TargetMB*1024*1024) {
-            Write-Host "  NOTE   : Slightly over limit (container overhead)."
+            $lines += "NOTE   : Slightly over limit (container overhead)."
         }
-    } else { Write-Host "  ERROR: Output not created." }
+    } else { $lines += "ERROR: Output not created." }
+    if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+    return [PSCustomObject]@{ Success = $success; ErrorMessage = $null; Outputs = @($outputFile); Lines = $lines }
 }
 
 
@@ -253,8 +301,14 @@ function Invoke-Compress {
 # TOOL: Portrait to landscape - blur-fill 1280x720
 # ==============================================================================
 function Invoke-LandscapeFill {
-    $cropW, $cropH, $cropX, $cropY, $hasCrop = Get-CropParams
-    $outputFile = Join-Path $outDir "${inputBase}_landscape.mp4"
+    param(
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutDir,
+        [Parameter(Mandatory=$true)][string]$InputBase,
+        [switch]$Quiet
+    )
+    $cropW, $cropH, $cropX, $cropY, $hasCrop = Get-CropParams -InputFile $InputFile
+    $outputFile = Join-Path $OutDir "${InputBase}_landscape.mp4"
     Write-Host ""
     Write-Host "[3] Encoding landscape blur-fill..."
     $t = Get-Date
@@ -270,16 +324,22 @@ function Invoke-LandscapeFill {
                  "-c:v","libx264","-preset","fast","-crf","18",
                  "-c:a","aac","-b:a","128k","-movflags","+faststart",$outputFile)
     $r = Invoke-FfmpegWithProgress -FfmpegArgs $encArgs -DurationSec $dur -Label "Encoding"
-    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
+    if ($r.ExitCode -ne 0) {
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+        Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+    }
     Write-Host "  Encode: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    Write-Host ""
-    Write-Host "[4] Results"
-    if (Test-Path -LiteralPath $outputFile) {
+    if (-not $Quiet) { Write-Host ""; Write-Host "[4] Results" }
+    $lines = @()
+    $success = Test-Path -LiteralPath $outputFile
+    if ($success) {
         $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
-        Write-Host "  Output : $outputFile"
-        Write-Host "  Size   : ${outMB} MB  (1280x720 landscape)"
-    } else { Write-Host "  ERROR: Output not created." }
+        $lines += "Output : $outputFile"
+        $lines += "Size   : ${outMB} MB  (1280x720 landscape)"
+    } else { $lines += "ERROR: Output not created." }
+    if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+    return [PSCustomObject]@{ Success = $success; ErrorMessage = $null; Outputs = @($outputFile); Lines = $lines }
 }
 
 
@@ -287,12 +347,19 @@ function Invoke-LandscapeFill {
 # TOOL: Remove black bars only
 # ==============================================================================
 function Invoke-CropFix {
-    $cropW, $cropH, $cropX, $cropY, $hasCrop = Get-CropParams
+    param(
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutDir,
+        [Parameter(Mandatory=$true)][string]$InputBase,
+        [switch]$Quiet
+    )
+    $cropW, $cropH, $cropX, $cropY, $hasCrop = Get-CropParams -InputFile $InputFile
     if (-not $hasCrop) {
         Write-Host "  No significant black bars detected - nothing to do."
+        if ($Quiet) { return [PSCustomObject]@{ Success=$true; ErrorMessage=$null; Outputs=@(); Lines=@("No significant black bars detected - nothing to do.") } }
         Stop-Transcript | Out-Null; exit 0
     }
-    $outputFile = Join-Path $outDir "${inputBase}_cropfix.mp4"
+    $outputFile = Join-Path $OutDir "${InputBase}_cropfix.mp4"
     Write-Host ""
     Write-Host "[3] Encoding with black bars removed..."
     $t = Get-Date
@@ -302,47 +369,81 @@ function Invoke-CropFix {
                  "-c:v","libx264","-preset","fast","-crf","18",
                  "-c:a","copy","-movflags","+faststart",$outputFile)
     $r = Invoke-FfmpegWithProgress -FfmpegArgs $encArgs -DurationSec $dur -Label "Encoding"
-    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
+    if ($r.ExitCode -ne 0) {
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+        Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+    }
     Write-Host "  Encode: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    Write-Host ""
-    Write-Host "[4] Results"
-    if (Test-Path -LiteralPath $outputFile) {
+    if (-not $Quiet) { Write-Host ""; Write-Host "[4] Results" }
+    $lines = @()
+    $success = Test-Path -LiteralPath $outputFile
+    if ($success) {
         $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
-        Write-Host "  Output : $outputFile"
-        Write-Host "  Size   : ${outMB} MB  (${cropW}x${cropH})"
-    } else { Write-Host "  ERROR: Output not created." }
+        $lines += "Output : $outputFile"
+        $lines += "Size   : ${outMB} MB  (${cropW}x${cropH})"
+    } else { $lines += "ERROR: Output not created." }
+    if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+    return [PSCustomObject]@{ Success = $success; ErrorMessage = $null; Outputs = @($outputFile); Lines = $lines }
 }
 
 
 # ==============================================================================
+# HELPERS: Clip-list collection for Invoke-Trim - split out so the batch plan
+# phase can gather clips for a queued job up front (see IDEAS.md "Multi-file
+# batch flows"), reusing the exact same prompts/parsing as the N=1 path.
+# ==============================================================================
+function Get-ClipsFromArgs {
+    param([Parameter(Mandatory=$true)][string[]]$ClipArgs)
+    Write-Host ""
+    Write-Host "[2] Using clips from -ClipArgs argument:"
+    $clips = @()
+    foreach ($c in $ClipArgs) {
+        $parts = $c -split '-', 2
+        if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$c' - expected 'start-end' (blank end = to EOF)."; Stop-Transcript | Out-Null; exit 1 }
+        $endLabel = if ($parts[1].Trim()) { $parts[1].Trim() } else { "(end of file)" }
+        Write-Host "  $($parts[0].Trim()) -> $endLabel"
+        $clips += [PSCustomObject]@{ Start = $parts[0].Trim(); End = $parts[1].Trim() }
+    }
+    return $clips
+}
+
+function Read-ClipsInteractive {
+    Write-Host ""
+    Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish, blank end = to EOF."
+    $clips = @()
+    while ($true) {
+        Write-Host ""
+        $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
+        if (-not $s -or -not $s.Trim()) { break }
+        $e = Read-Host "  Clip $($clips.Count + 1) end (blank = to end of file)"
+        $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
+    }
+    return $clips
+}
+
+# ==============================================================================
 # TOOL: Trim clip(s) from a single file (visually lossless re-encode)
+#
+# -Clips (an already-resolved array of {Start,End}) lets the batch plan phase
+# hand over clips gathered earlier, so the execute phase doesn't re-prompt.
+# When -Clips is not given, falls back to -ClipArgs / interactive prompt exactly
+# as before (the N=1 path).
 # ==============================================================================
 function Invoke-Trim {
-    $clips = @()
-    if ($ClipArgs.Count -gt 0) {
-        Write-Host ""
-        Write-Host "[2] Using clips from -ClipArgs argument:"
-        foreach ($c in $ClipArgs) {
-            $parts = $c -split '-', 2
-            if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$c' - expected 'start-end' (blank end = to EOF)."; Stop-Transcript | Out-Null; exit 1 }
-            $endLabel = if ($parts[1].Trim()) { $parts[1].Trim() } else { "(end of file)" }
-            Write-Host "  $($parts[0].Trim()) -> $endLabel"
-            $clips += [PSCustomObject]@{ Start = $parts[0].Trim(); End = $parts[1].Trim() }
-        }
-    } else {
-        Write-Host ""
-        Write-Host "[2] Enter clips to extract (HH:MM:SS or MM:SS). Blank start to finish, blank end = to EOF."
-        while ($true) {
-            Write-Host ""
-            $s = Read-Host "  Clip $($clips.Count + 1) start (blank to finish)"
-            if (-not $s -or -not $s.Trim()) { break }
-            $e = Read-Host "  Clip $($clips.Count + 1) end (blank = to end of file)"
-            $clips += [PSCustomObject]@{ Start = $s.Trim(); End = $e.Trim() }
-        }
-    }
+    param(
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutDir,
+        [Parameter(Mandatory=$true)][string]$InputBase,
+        [string[]]$ClipArgs = @(),
+        [string]$TrimMode = "fast",
+        [object[]]$Clips = $null,
+        [switch]$Quiet
+    )
+    $clips = if ($Clips) { $Clips } elseif ($ClipArgs.Count -gt 0) { Get-ClipsFromArgs -ClipArgs $ClipArgs } else { Read-ClipsInteractive }
     if ($clips.Count -eq 0) {
         Write-Host "  No clips entered - nothing to do."
+        if ($Quiet) { return [PSCustomObject]@{ Success=$true; ErrorMessage=$null; Outputs=@(); Lines=@("No clips entered - nothing to do.") } }
         Stop-Transcript | Out-Null; exit 0
     }
 
@@ -355,7 +456,7 @@ function Invoke-Trim {
     for ($i = 0; $i -lt $clips.Count; $i++) {
         $c = $clips[$i]
         $suffix = if ($clips.Count -gt 1) { "_clip$($i+1)" } else { "_clip" }
-        $clipFile = Join-Path $outDir "${inputBase}${suffix}${ext}"
+        $clipFile = Join-Path $OutDir "${InputBase}${suffix}${ext}"
         $endLabel = if ($c.End) { $c.End } else { "EOF" }
         Write-Host "  Clip $($i+1): $($c.Start) -> $endLabel"
         if ($TrimMode -eq "fast") {
@@ -373,7 +474,10 @@ function Invoke-Trim {
             $fastExit = $LASTEXITCODE
             Add-Content -Path $script:FfmpegRawLog -Value "===== Trim clip $($i+1) (fast) : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') : exit=$fastExit ====="
             if ($fastErr) { Add-Content -Path $script:FfmpegRawLog -Value (($fastErr | Out-String).TrimEnd()) }
-            if ($fastExit -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
+            if ($fastExit -ne 0) {
+                if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=$outFiles; Lines=@() } }
+                Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+            }
         } else {
             # Output seeking (-ss after -i) + re-encode: exact frame cut, but decodes from the start of the file - slow on large files.
             $clipStartSec = ConvertTo-Seconds $c.Start
@@ -387,20 +491,26 @@ function Invoke-Trim {
             }
             $label = if ($clips.Count -gt 1) { "Trimming clip $($i+1)/$($clips.Count)" } else { "Trimming" }
             $r = Invoke-FfmpegWithProgress -FfmpegArgs $trimArgs -DurationSec $clipDur -Label $label
-            if ($r.ExitCode -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
+            if ($r.ExitCode -ne 0) {
+                if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=$outFiles; Lines=@() } }
+                Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+            }
         }
         $outFiles += $clipFile
     }
     Write-Host "  Trim: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    Write-Host ""
-    Write-Host "[4] Results"
+    if (-not $Quiet) { Write-Host ""; Write-Host "[4] Results" }
+    $lines = @()
+    $allOk = $true
     foreach ($f in $outFiles) {
         if (Test-Path -LiteralPath $f) {
             $outMB = [math]::Round((Get-Item -LiteralPath $f).Length/1MB,2)
-            Write-Host "  Output : $f  (${outMB} MB)"
-        } else { Write-Host "  ERROR: $f not created." }
+            $lines += "Output : $f  (${outMB} MB)"
+        } else { $lines += "ERROR: $f not created."; $allOk = $false }
     }
+    if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+    return [PSCustomObject]@{ Success = $allOk; ErrorMessage = $null; Outputs = $outFiles; Lines = $lines }
 }
 
 
@@ -464,7 +574,13 @@ function Invoke-Merge {
 # TOOL: Convert any format to MP3 (audio-only, VBR high quality)
 # ==============================================================================
 function Invoke-ConvertMp3 {
-    $outputFile = Join-Path $outDir "${inputBase}.mp3"
+    param(
+        [Parameter(Mandatory=$true)][string]$InputFile,
+        [Parameter(Mandatory=$true)][string]$OutDir,
+        [Parameter(Mandatory=$true)][string]$InputBase,
+        [switch]$Quiet
+    )
+    $outputFile = Join-Path $OutDir "${InputBase}.mp3"
     Write-Host ""
     Write-Host "[2] Converting to MP3..."
     $t = Get-Date
@@ -472,16 +588,22 @@ function Invoke-ConvertMp3 {
 
     $convArgs = @("-nostdin","-y","-i",$InputFile,"-vn","-c:a","libmp3lame","-q:a","0",$outputFile)
     $r = Invoke-FfmpegWithProgress -FfmpegArgs $convArgs -DurationSec $dur -Label "Converting"
-    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Conversion failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
+    if ($r.ExitCode -ne 0) {
+        if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Conversion failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+        Write-Host "ERROR: Conversion failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+    }
     Write-Host "  Convert: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    Write-Host ""
-    Write-Host "[3] Results"
-    if (Test-Path -LiteralPath $outputFile) {
+    if (-not $Quiet) { Write-Host ""; Write-Host "[3] Results" }
+    $lines = @()
+    $success = Test-Path -LiteralPath $outputFile
+    if ($success) {
         $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
-        Write-Host "  Output : $outputFile"
-        Write-Host "  Size   : ${outMB} MB  (MP3, VBR ~245kbps avg)"
-    } else { Write-Host "  ERROR: Output not created." }
+        $lines += "Output : $outputFile"
+        $lines += "Size   : ${outMB} MB  (MP3, VBR ~245kbps avg)"
+    } else { $lines += "ERROR: Output not created." }
+    if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+    return [PSCustomObject]@{ Success = $success; ErrorMessage = $null; Outputs = @($outputFile); Lines = $lines }
 }
 
 
@@ -489,6 +611,7 @@ function Invoke-ConvertMp3 {
 # HELPER: Detect black bars via cropdetect
 # ==============================================================================
 function Get-CropParams {
+    param([Parameter(Mandatory=$true)][string]$InputFile)
     Write-Host ""
     Write-Host "[2] Detecting black bars..."
     $t = Get-Date
@@ -556,10 +679,84 @@ if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out
 
 Write-Host ""
 Write-Host "=== FFMPEG Kit ==="
+
+# $choice drives the single-tool dispatch path (N=1, and N>1 "merge" mode).
+# $batchJobs (only set for N>1 "separate actions" mode) drives the queued
+# plan/execute/report path instead - see IDEAS.md "Multi-file batch flows".
+$choice    = ""
+$batchJobs = $null
+
 if ($multiFile) {
     Write-Host "Input : $($InputFiles.Count) files dropped"
     $InputFiles | ForEach-Object { Write-Host "  - $_" }
-    $choice = if ($ActionNum) { $ActionNum } else { "5" }
+    Write-Host ""
+
+    # Non-interactive override, consistent with how -Action already works for N=1:
+    # -Action merge (or "5") skips the question and merges; any other -Action value
+    # skips the question and applies that SAME action to every dropped file with no
+    # per-file menu (so existing scripted/Claude -Action usage keeps working).
+    $batchMode = if ($ActionNum -eq "5" -or $Action.ToLower() -eq "merge") {
+        "merge"
+    } elseif ($ActionNum -and $Action.ToLower() -ne "separate") {
+        "separate-noninteractive"
+    } elseif ($Action.ToLower() -eq "separate") {
+        "separate"
+    } else {
+        $ans = Read-Host "  Merge these into one file, or separate actions per file? (m/s)"
+        if ($ans.Trim().ToLower() -in @("m","merge")) { "merge" } else { "separate" }
+    }
+
+    if ($batchMode -eq "merge") {
+        $choice = "5"
+    } else {
+        # Plan phase - collect {file, action, params} for every file. No ffmpeg calls yet.
+        $batchJobs = @()
+        foreach ($f in $InputFiles) {
+            $fBase      = [System.IO.Path]::GetFileNameWithoutExtension($f)
+            $fSizeMB    = [math]::Round((Get-Item -LiteralPath $f).Length / 1MB, 2)
+            $fQuarterMB = [math]::Round($fSizeMB * 0.25, 2)
+            $fHalfMB    = [math]::Round($fSizeMB * 0.5, 2)
+
+            Write-Host "--- $f  (${fSizeMB} MB) ---"
+            $fChoice = if ($batchMode -eq "separate-noninteractive") {
+                Write-Host "  Action: $ActionNum (from -Action argument)"
+                $ActionNum
+            } else {
+                Write-Host "  [1] Compress to target size"
+                Write-Host "  [2] Portrait to landscape  (blur-fill 1280x720, removes black bars)"
+                Write-Host "  [3] Remove black bars only (keep original dimensions)"
+                Write-Host "  [4] Trim clip(s)           (cut one or more sections from this file)"
+                Write-Host "  [6] Convert to MP3         (any format - audio-only, VBR high quality)"
+                Write-Host ""
+                Read-Host "  Choose (1-4, 6)"
+            }
+            if ($fChoice -notin @("1","2","3","4","6")) {
+                Write-Host "  Invalid choice - skipping this file."
+                Write-Host ""
+                continue
+            }
+
+            $job = [PSCustomObject]@{
+                InputFile = $f
+                InputBase = $fBase
+                Choice    = $fChoice
+                TargetMB  = 0
+                Clips     = $null
+                TrimMode  = $TrimMode
+            }
+            if ($fChoice -eq "1") {
+                $job.TargetMB = Read-TargetMBInteractive -QuarterSizeMB $fQuarterMB -HalfSizeMB $fHalfMB
+            } elseif ($fChoice -eq "4") {
+                $job.Clips = Read-ClipsInteractive
+            }
+            $batchJobs += $job
+            Write-Host ""
+        }
+        if (-not $batchJobs -or $batchJobs.Count -eq 0) {
+            Write-Host "No valid jobs queued - nothing to do."
+            exit 1
+        }
+    }
 } elseif ($ActionNum) {
     Write-Host "Input : $InputFile  (${inputSizeMB} MB)"
     Write-Host "Action: $ActionNum (from -Action argument)"
@@ -577,7 +774,7 @@ if ($multiFile) {
 }
 Write-Host ""
 
-if ($choice -notin @("1","2","3","4","5","6")) {
+if (-not $batchJobs -and $choice -notin @("1","2","3","4","5","6")) {
     Write-Host "Invalid choice."
     exit 1
 }
@@ -591,10 +788,16 @@ Start-Transcript -Path $LogFile -NoClobber | Out-Null
 $script:FfmpegRawLog = Join-Path $LogDir "$([System.IO.Path]::GetFileNameWithoutExtension($LogFile))_ffmpeg.log"
 New-Item -ItemType File -Path $script:FfmpegRawLog -Force | Out-Null
 
-$toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } "6" { "Convert to MP3" } }
-Write-Host "=== FFMPEG Kit - $toolName ==="
-Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "Input   : $InputFile"
+if ($batchJobs) {
+    Write-Host "=== FFMPEG Kit - Batch ($($batchJobs.Count) file action(s)) ==="
+    Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "Input   : $($batchJobs.Count) queued job(s)"
+} else {
+    $toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } "6" { "Convert to MP3" } }
+    Write-Host "=== FFMPEG Kit - $toolName ==="
+    Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "Input   : $InputFile"
+}
 Write-Host "FFmpeg log: $script:FfmpegRawLog"
 Write-Host ""
 
@@ -681,13 +884,50 @@ Write-Host "  ffmpeg : $ffmpegExe"
 Write-Host "  ffprobe: $ffprobeExe"
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
-switch ($choice) {
-    "1" { Invoke-Compress }
-    "2" { Invoke-LandscapeFill }
-    "3" { Invoke-CropFix }
-    "4" { Invoke-Trim }
-    "5" { Invoke-Merge }
-    "6" { Invoke-ConvertMp3 }
+if ($batchJobs) {
+    # Execute phase - sequential, no parallel ffmpeg execution (see IDEAS.md).
+    $batchResults = @()
+    foreach ($job in $batchJobs) {
+        $jInputDir = Split-Path -Parent $job.InputFile
+        $jOutDir   = if ($OutputDir -and $OutputDir.Trim()) { $OutputDir } else { $jInputDir }
+        if (-not (Test-Path $jOutDir)) { New-Item -ItemType Directory -Path $jOutDir | Out-Null }
+        $jSizeMB   = [math]::Round((Get-Item -LiteralPath $job.InputFile).Length / 1MB, 2)
+
+        $toolLabel = switch ($job.Choice) { "1" {"Compress"} "2" {"Landscape blur-fill"} "3" {"Remove black bars"} "4" {"Trim clip(s)"} "6" {"Convert to MP3"} }
+        Write-Host ""
+        Write-Host "=== Job: $($job.InputFile)  ($toolLabel) ==="
+
+        $result = switch ($job.Choice) {
+            "1" { Invoke-Compress -InputFile $job.InputFile -OutDir $jOutDir -InputBase $job.InputBase -InputSizeMB $jSizeMB -ResolvedTargetMB $job.TargetMB -Quiet }
+            "2" { Invoke-LandscapeFill -InputFile $job.InputFile -OutDir $jOutDir -InputBase $job.InputBase -Quiet }
+            "3" { Invoke-CropFix -InputFile $job.InputFile -OutDir $jOutDir -InputBase $job.InputBase -Quiet }
+            "4" { Invoke-Trim -InputFile $job.InputFile -OutDir $jOutDir -InputBase $job.InputBase -Clips $job.Clips -TrimMode $job.TrimMode -Quiet }
+            "6" { Invoke-ConvertMp3 -InputFile $job.InputFile -OutDir $jOutDir -InputBase $job.InputBase -Quiet }
+        }
+        $batchResults += [PSCustomObject]@{ InputFile = $job.InputFile; Tool = $toolLabel; Result = $result }
+    }
+
+    # Report phase - one consolidated results block instead of scattered per-job output.
+    Write-Host ""
+    Write-Host "=== Results ==="
+    foreach ($br in $batchResults) {
+        Write-Host ""
+        Write-Host "$($br.InputFile)  -  $($br.Tool)"
+        if ($br.Result.Success) {
+            $br.Result.Lines | ForEach-Object { Write-Host "  $_" }
+        } else {
+            Write-Host "  ERROR: $($br.Result.ErrorMessage)"
+        }
+    }
+} else {
+    switch ($choice) {
+        "1" { Invoke-Compress -InputFile $InputFile -OutDir $outDir -InputBase $inputBase -InputSizeMB $inputSizeMB -QuarterSizeMB $quarterSizeMB -HalfSizeMB $halfSizeMB -TargetMB $TargetMB | Out-Null }
+        "2" { Invoke-LandscapeFill -InputFile $InputFile -OutDir $outDir -InputBase $inputBase | Out-Null }
+        "3" { Invoke-CropFix -InputFile $InputFile -OutDir $outDir -InputBase $inputBase | Out-Null }
+        "4" { Invoke-Trim -InputFile $InputFile -OutDir $outDir -InputBase $inputBase -ClipArgs $ClipArgs -TrimMode $TrimMode | Out-Null }
+        "5" { Invoke-Merge }
+        "6" { Invoke-ConvertMp3 -InputFile $InputFile -OutDir $outDir -InputBase $inputBase | Out-Null }
+    }
 }
 
 # ── Finish ────────────────────────────────────────────────────────────────────

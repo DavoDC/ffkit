@@ -62,45 +62,6 @@ uniformly - that over-engineers a display tweak into its own subsystem.
 
 ---
 
-**Multi-file batch flows - per-file actions, not just forced merge**
-
-From /think + /aristotle (2026-09-07). Today, N>1 files silently forces
-merge with zero prompting (`CLAUDE.md` documents this as the only
-multi-file behavior). Real want: sometimes merge, sometimes independent
-actions per file (e.g. compress file 1 AND trim file 2 from one drop),
-all within a single terminal window.
-
-Design - plan / execute / report, not parallel execution:
-1. **Plan phase** (no ffmpeg calls yet): 1 file = today's behavior,
-   unchanged. N files = ask ONE bootstrapping question, "Merge these
-   into one file, or separate actions per file?" Merge -> today's
-   `Invoke-Merge`, done. Separate -> loop file-by-file showing the
-   existing menu (minus option 5/merge - merge doesn't make sense
-   per-file) and queue `{file, action, params}` jobs without executing
-   yet.
-2. **Execute phase**: run queued jobs sequentially, each through
-   `Invoke-FfmpegWithProgress` (see progress entry above).
-3. **Report phase**: one consolidated results block instead of
-   scattered per-job output.
-
-Rejected: true parallel execution of 2+ ffmpeg processes at once. Two
-CPU-bound `libx264 slow` encodes fight over the same cores (no GPU
-encode path wired up) and interleaved output from two processes in one
-window recreates the terminal-noise problem in a different shape.
-Sequential-with-a-queue is what actually delivers "one terminal, any
-number of videos" cleanly. Opportunistic parallelism for genuinely-fast
-ops (stream-copy trim/merge) is a legitimate later enhancement, not part
-of the first cut.
-
-Required refactor: the single-file `Invoke-*` functions currently read
-`$InputFile`/`$TargetMB`/`$ClipArgs` as module-level globals - they need
-to take these as explicit parameters so the same function body serves
-both the N=1 path (unchanged) and each queued job. **Acceptance test:
-N=1 behavior must be provably identical to today's before calling this
-done** - that's still the common case.
-
----
-
 **Raphael machine - pull repos and delete local FFmpeg copies**
 
 Blocked until holiday ends. When back: pull latest on SBS_Download, FLAC_Flow, and RivalsVidMaker (sibling-check already in main), then delete the local `dependencies/ffmpeg/` copy from each repo.

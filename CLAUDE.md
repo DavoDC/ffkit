@@ -17,7 +17,7 @@ This is the shared location - sibling repos check here first before downloading 
 
 ## Output defaults
 
-FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (trims, merges, compresses, etc). Drop multiple files onto the launcher to merge them; drop one file to get the full menu (compress/landscape/cropfix/trim).
+FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (trims, merges, compresses, etc). Drop one file to get the full menu (compress/landscape/cropfix/trim/mp3). Drop multiple files and you're asked once: merge them into one file, or run separate per-file actions - separate shows the same per-file menu (minus merge) for each file, queues the jobs, runs them one at a time, then prints one consolidated results block. `-Action merge` (or any other `-Action` value) skips that question non-interactively and applies to every dropped file.
 
 ## Sibling repos that use ffkit's FFmpeg
 

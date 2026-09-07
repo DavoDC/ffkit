@@ -4,7 +4,7 @@ title FFMPEG Kit
 if "%~1"=="" (
     echo.
     echo  Usage: Drag and drop a video file onto this script.
-    echo  Drag and drop multiple files to merge them.
+    echo  Drag and drop multiple files to merge or run per-file actions.
     echo.
     cmd /k
     exit
