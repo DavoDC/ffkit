@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$true, Position=0, ValueFromRemainingArguments=$true)]
     [string[]]$InputFiles,
 
     # Non-interactive mode: pass these to skip all Read-Host prompts (for scripted/Claude use).
