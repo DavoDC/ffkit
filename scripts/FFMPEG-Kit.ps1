@@ -20,6 +20,155 @@ $ActionMap = @{ "compress"="1"; "landscape"="2"; "cropfix"="3"; "trim"="4"; "mer
 $ActionNum = if ($Action -and $ActionMap.ContainsKey($Action.ToLower())) { $ActionMap[$Action.ToLower()] } elseif ($Action) { $Action } else { "" }
 
 # ==============================================================================
+# HELPER: Duration / time-string conversions shared by the tools below
+# ==============================================================================
+function Get-VideoDuration([string]$File) {
+    $raw = (& $ffprobeExe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$File" 2>&1 | Out-String).Trim()
+    [double]$d = 0.0
+    if ([double]::TryParse($raw,[ref]$d)) { return $d }
+    return 0.0
+}
+
+function ConvertTo-Seconds([string]$TimeStr) {
+    if (-not $TimeStr) { return 0.0 }
+    $sec = 0.0
+    foreach ($p in ($TimeStr -split ':')) { $sec = $sec * 60 + [double]$p }
+    return $sec
+}
+
+function Format-Seconds([double]$Sec) {
+    if ($Sec -lt 0) { $Sec = 0 }
+    $ts = [TimeSpan]::FromSeconds([math]::Round($Sec))
+    if ($ts.TotalHours -ge 1) { return $ts.ToString("hh\:mm\:ss") }
+    return $ts.ToString("mm\:ss")
+}
+
+# ProcessStartInfo.ArgumentList isn't present on this box's Windows PowerShell 5.1 / .NET Framework
+# build (tested: it comes back $null, so .Add() throws) - build a single quoted Arguments string
+# instead, using the same escaping rules CommandLineToArgvW expects (this is what correctly
+# round-trips paths/filters with spaces or quotes, unlike the old bare string-interpolation calls).
+function ConvertTo-QuotedArg([string]$Arg) {
+    if ($Arg -eq '') { return '""' }
+    if ($Arg -notmatch '[\s"]') { return $Arg }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $i = 0
+    while ($i -lt $Arg.Length) {
+        $numBackslashes = 0
+        while ($i -lt $Arg.Length -and $Arg[$i] -eq '\') { $numBackslashes++; $i++ }
+        if ($i -eq $Arg.Length) {
+            [void]$sb.Append('\' * ($numBackslashes * 2))
+            break
+        } elseif ($Arg[$i] -eq '"') {
+            [void]$sb.Append('\' * ($numBackslashes * 2 + 1))
+            [void]$sb.Append('"')
+            $i++
+        } else {
+            [void]$sb.Append('\' * $numBackslashes)
+            [void]$sb.Append($Arg[$i])
+            $i++
+        }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+# ==============================================================================
+# HELPER: Run ffmpeg with a single self-overwriting progress line on the
+# terminal, while the log file keeps ffmpeg's own diagnostic detail.
+#
+# Design note (tested empirically, not assumed): Start-Transcript holds an
+# EXCLUSIVE file handle on $LogFile for the whole run on Windows - both a
+# direct `2>>` append from a second process and Add-Content against the
+# open-transcript file throw "The process cannot access the file ... because
+# it is being used by another process." So ffmpeg's raw stderr can't append
+# to the transcript log directly; it goes to a sibling file instead
+# ($script:FfmpegRawLog, set up in MAIN), whose path is printed once near the
+# top of the transcript log and on any failure.
+#
+# -LogLevel defaults to "error" so the console (via -progress pipe:1 on a
+# separate stdout channel) only shows the clean progress line, not ffmpeg's
+# codec banner - real errors still land in $script:FfmpegRawLog. Callers that
+# need ffmpeg's normal-verbosity stderr for their own parsing (cropdetect)
+# can override -LogLevel; -progress reporting is independent of loglevel.
+# ==============================================================================
+function Invoke-FfmpegWithProgress {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$FfmpegArgs,
+        [double]$DurationSec = 0,
+        [string]$Label = "Encoding",
+        [string]$LogLevel = "error"
+    )
+
+    $fullArgs = $FfmpegArgs + @("-loglevel", $LogLevel, "-progress", "pipe:1")
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName  = $ffmpegExe
+    $psi.Arguments = ($fullArgs | ForEach-Object { ConvertTo-QuotedArg $_ }) -join ' '
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow  = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+
+    $stderrSb  = New-Object System.Text.StringBuilder
+    $errAction = {
+        if ($null -ne $EventArgs.Data) { [void]$Event.MessageData.AppendLine($EventArgs.Data) }
+    }
+    $errSub = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action $errAction -MessageData $stderrSb
+
+    [void]$proc.Start()
+    $proc.BeginErrorReadLine()
+
+    $overallSw  = [System.Diagnostics.Stopwatch]::StartNew()
+    $throttleSw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastLen    = 0
+    $curOutSec  = 0.0
+    $curSpeed   = ""
+
+    while ($true) {
+        $line = $proc.StandardOutput.ReadLine()
+        if ($null -eq $line) { break }
+
+        if ($line -match '^out_time_ms=(-?\d+)') {
+            $curOutSec = [double]$Matches[1] / 1000000.0
+        } elseif ($line -match '^out_time=(\d+):(\d+):([\d.]+)') {
+            $curOutSec = [int]$Matches[1]*3600 + [int]$Matches[2]*60 + [double]$Matches[3]
+        } elseif ($line -match '^speed=\s*([\d.]+)x') {
+            $curSpeed = $Matches[1]
+        }
+
+        $isEnd = $line -match '^progress=end'
+        if ($isEnd -or $throttleSw.Elapsed.TotalSeconds -ge 0.5) {
+            if ($DurationSec -gt 0) {
+                $pct = [math]::Min(100, [math]::Max(0, ($curOutSec / $DurationSec) * 100))
+                $rendered = "  ${Label}: $([math]::Round($pct))% ($(Format-Seconds $curOutSec)/$(Format-Seconds $DurationSec)$(if ($curSpeed) { ", ${curSpeed}x" }))"
+            } else {
+                $rendered = "  ${Label}: $(Format-Seconds $overallSw.Elapsed.TotalSeconds) elapsed$(if ($curSpeed) { " (${curSpeed}x)" })"
+            }
+            $pad = [math]::Max(0, $lastLen - $rendered.Length)
+            Write-Host -NoNewline ("`r" + $rendered + (" " * $pad))
+            $lastLen = $rendered.Length
+            $throttleSw.Restart()
+        }
+    }
+    Write-Host ""   # end the self-overwriting line
+
+    $proc.WaitForExit()
+    Unregister-Event -SourceIdentifier $errSub.Name -EA SilentlyContinue
+    Remove-Job -Name $errSub.Name -Force -EA SilentlyContinue
+    $exitCode = $proc.ExitCode
+
+    $header = "===== $Label : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') : exit=$exitCode ====="
+    Add-Content -Path $script:FfmpegRawLog -Value $header
+    if ($stderrSb.Length -gt 0) { Add-Content -Path $script:FfmpegRawLog -Value $stderrSb.ToString().TrimEnd() }
+
+    return [PSCustomObject]@{ ExitCode = $exitCode; StdErr = $stderrSb.ToString() }
+}
+
+# ==============================================================================
 # TOOL: Compress to target size
 # ==============================================================================
 function Invoke-Compress {
@@ -73,16 +222,16 @@ function Invoke-Compress {
     Write-Host ""
     Write-Host "[3] Two-pass encoding..."
     $t3 = Get-Date
-    Write-Host "  Pass 1/2..."
-    & $ffmpegExe -nostdin -y -i "$InputFile" -c:v libx264 -preset slow -profile:v high `
-        -b:v "${vidBitrateK}k" -pass 1 -passlogfile "$passlog" -an -f null NUL
-    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Pass 1 failed."; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+    $p1Args = @("-nostdin","-y","-i",$InputFile,"-c:v","libx264","-preset","slow","-profile:v","high",
+                "-b:v","${vidBitrateK}k","-pass","1","-passlogfile",$passlog,"-an","-f","null","NUL")
+    $r1 = Invoke-FfmpegWithProgress -FfmpegArgs $p1Args -DurationSec $dur -Label "Pass 1/2"
+    if ($r1.ExitCode -ne 0) { Write-Host "ERROR: Pass 1 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
 
-    Write-Host "  Pass 2/2..."
-    & $ffmpegExe -nostdin -y -i "$InputFile" -c:v libx264 -preset slow -profile:v high `
-        -b:v "${vidBitrateK}k" -pass 2 -passlogfile "$passlog" `
-        -c:a aac -b:a "${audioBps}k" -af aresample=async=1 -movflags +faststart "$outputFile"
-    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Pass 2 failed."; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+    $p2Args = @("-nostdin","-y","-i",$InputFile,"-c:v","libx264","-preset","slow","-profile:v","high",
+                "-b:v","${vidBitrateK}k","-pass","2","-passlogfile",$passlog,
+                "-c:a","aac","-b:a","${audioBps}k","-af","aresample=async=1","-movflags","+faststart",$outputFile)
+    $r2 = Invoke-FfmpegWithProgress -FfmpegArgs $p2Args -DurationSec $dur -Label "Pass 2/2"
+    if ($r2.ExitCode -ne 0) { Write-Host "ERROR: Pass 2 failed. See raw ffmpeg log: $script:FfmpegRawLog"; Remove-Item "${passlog}*" -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
     Remove-Item "${passlog}*" -EA SilentlyContinue
     Write-Host "  Encode: $([int]((Get-Date)-$t3).TotalSeconds)s"
 
@@ -109,6 +258,7 @@ function Invoke-LandscapeFill {
     Write-Host ""
     Write-Host "[3] Encoding landscape blur-fill..."
     $t = Get-Date
+    $dur = Get-VideoDuration $InputFile
 
     if ($hasCrop) {
         $fc = "[0:v]crop=${cropW}:${cropH}:${cropX}:${cropY},split[c1][c2];[c1]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=15:5[bg];[c2]scale=1280:720:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
@@ -116,11 +266,11 @@ function Invoke-LandscapeFill {
         $fc = "[0:v]split[c1][c2];[c1]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=15:5[bg];[c2]scale=1280:720:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
     }
 
-    & $ffmpegExe -nostdin -y -i "$InputFile" `
-        -filter_complex $fc -map "[out]" -map "0:a?" `
-        -c:v libx264 -preset fast -crf 18 `
-        -c:a aac -b:a 128k -movflags +faststart "$outputFile"
-    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Encode failed."; Stop-Transcript | Out-Null; exit 1 }
+    $encArgs = @("-nostdin","-y","-i",$InputFile,"-filter_complex",$fc,"-map","[out]","-map","0:a?",
+                 "-c:v","libx264","-preset","fast","-crf","18",
+                 "-c:a","aac","-b:a","128k","-movflags","+faststart",$outputFile)
+    $r = Invoke-FfmpegWithProgress -FfmpegArgs $encArgs -DurationSec $dur -Label "Encoding"
+    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
     Write-Host "  Encode: $([int]((Get-Date)-$t).TotalSeconds)s"
 
     Write-Host ""
@@ -146,12 +296,13 @@ function Invoke-CropFix {
     Write-Host ""
     Write-Host "[3] Encoding with black bars removed..."
     $t = Get-Date
+    $dur = Get-VideoDuration $InputFile
 
-    & $ffmpegExe -nostdin -y -i "$InputFile" `
-        -vf "crop=${cropW}:${cropH}:${cropX}:${cropY}" `
-        -c:v libx264 -preset fast -crf 18 `
-        -c:a copy -movflags +faststart "$outputFile"
-    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Encode failed."; Stop-Transcript | Out-Null; exit 1 }
+    $encArgs = @("-nostdin","-y","-i",$InputFile,"-vf","crop=${cropW}:${cropH}:${cropX}:${cropY}",
+                 "-c:v","libx264","-preset","fast","-crf","18",
+                 "-c:a","copy","-movflags","+faststart",$outputFile)
+    $r = Invoke-FfmpegWithProgress -FfmpegArgs $encArgs -DurationSec $dur -Label "Encoding"
+    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Encode failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
     Write-Host "  Encode: $([int]((Get-Date)-$t).TotalSeconds)s"
 
     Write-Host ""
@@ -210,20 +361,34 @@ function Invoke-Trim {
         if ($TrimMode -eq "fast") {
             # Input seeking (-ss before -i) + stream copy: near-instant, no quality loss.
             # Cut lands on the nearest keyframe at/before the requested start (usually within ~1-2s for typical GOP sizes).
+            # Sub-second op - no live progress line, but stderr still goes to the raw log, not the console.
+            # (Captured via 2>&1 + Add-Content rather than a native `2>>` redirect - the latter writes
+            # UTF-16 while Add-Content's default encoding is single-byte, and mixing the two in one file
+            # garbles it; this keeps every write to $script:FfmpegRawLog on the same encoding.)
             if ($c.End) {
-                & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -to $c.End -c copy -avoid_negative_ts make_zero "$clipFile"
+                $fastErr = & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -to $c.End -c copy -avoid_negative_ts make_zero "$clipFile" 2>&1
             } else {
-                & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -c copy -avoid_negative_ts make_zero "$clipFile"
+                $fastErr = & $ffmpegExe -nostdin -y -ss $c.Start -i "$InputFile" -c copy -avoid_negative_ts make_zero "$clipFile" 2>&1
             }
+            $fastExit = $LASTEXITCODE
+            Add-Content -Path $script:FfmpegRawLog -Value "===== Trim clip $($i+1) (fast) : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') : exit=$fastExit ====="
+            if ($fastErr) { Add-Content -Path $script:FfmpegRawLog -Value (($fastErr | Out-String).TrimEnd()) }
+            if ($fastExit -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
         } else {
             # Output seeking (-ss after -i) + re-encode: exact frame cut, but decodes from the start of the file - slow on large files.
+            $clipStartSec = ConvertTo-Seconds $c.Start
             if ($c.End) {
-                & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -to $c.End -c:v libx265 -preset slow -crf 16 -c:a ac3 -b:a 224k "$clipFile"
+                $clipDur  = (ConvertTo-Seconds $c.End) - $clipStartSec
+                $trimArgs = @("-nostdin","-y","-i",$InputFile,"-ss",$c.Start,"-to",$c.End,"-c:v","libx265","-preset","slow","-crf","16","-c:a","ac3","-b:a","224k",$clipFile)
             } else {
-                & $ffmpegExe -nostdin -y -i "$InputFile" -ss $c.Start -c:v libx265 -preset slow -crf 16 -c:a ac3 -b:a 224k "$clipFile"
+                if (-not $script:trimFileDur) { $script:trimFileDur = Get-VideoDuration $InputFile }
+                $clipDur  = $script:trimFileDur - $clipStartSec
+                $trimArgs = @("-nostdin","-y","-i",$InputFile,"-ss",$c.Start,"-c:v","libx265","-preset","slow","-crf","16","-c:a","ac3","-b:a","224k",$clipFile)
             }
+            $label = if ($clips.Count -gt 1) { "Trimming clip $($i+1)/$($clips.Count)" } else { "Trimming" }
+            $r = Invoke-FfmpegWithProgress -FfmpegArgs $trimArgs -DurationSec $clipDur -Label $label
+            if ($r.ExitCode -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1). See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
         }
-        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Trim failed for clip $($i+1)."; Stop-Transcript | Out-Null; exit 1 }
         $outFiles += $clipFile
     }
     Write-Host "  Trim: $([int]((Get-Date)-$t).TotalSeconds)s"
@@ -259,21 +424,26 @@ function Invoke-Merge {
     Write-Host "[2] Merging $($InputFiles.Count) file(s)..."
     Write-Host "  Attempting stream copy (lossless, no re-encode)..."
     $t = Get-Date
-    & $ffmpegExe -nostdin -y -f concat -safe 0 -i "$listFile" -c copy "$outputFile" 2>$null
-    $copyOk = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath $outputFile) -and ((Get-Item -LiteralPath $outputFile).Length -gt 0)
+    # Sub-second op when it works - no live progress line, but stderr still goes to the raw log, not the
+    # console (captured via 2>&1 + Add-Content, see the matching comment in Invoke-Trim's fast path).
+    $copyErr  = & $ffmpegExe -nostdin -y -f concat -safe 0 -i "$listFile" -c copy "$outputFile" 2>&1
+    $copyExit = $LASTEXITCODE
+    Add-Content -Path $script:FfmpegRawLog -Value "===== Merge (stream copy) : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') : exit=$copyExit ====="
+    if ($copyErr) { Add-Content -Path $script:FfmpegRawLog -Value (($copyErr | Out-String).TrimEnd()) }
+    $copyOk = ($copyExit -eq 0) -and (Test-Path -LiteralPath $outputFile) -and ((Get-Item -LiteralPath $outputFile).Length -gt 0)
 
     if (-not $copyOk) {
         Write-Host "  Stream copy failed (mismatched codecs/params) - re-encoding instead..."
         Remove-Item -LiteralPath $outputFile -Force -EA SilentlyContinue
-        $inputArgs = $InputFiles | ForEach-Object { "-i", "`"$_`"" }
         $n = $InputFiles.Count
         $concatInputs = (0..($n-1) | ForEach-Object { "[$_`:v:0][$_`:a:0]" }) -join ""
         $fc = "${concatInputs}concat=n=${n}:v=1:a=1[v][a]"
-        & $ffmpegExe -nostdin -y @($InputFiles | ForEach-Object { @("-i", $_) } | ForEach-Object { $_ }) `
-            -filter_complex $fc -map "[v]" -map "[a]" `
-            -c:v libx265 -preset slow -crf 16 `
-            -c:a ac3 -b:a 224k "$outputFile"
-        if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Merge failed."; Remove-Item $tempDir -Recurse -Force -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
+        $reArgs = @("-nostdin","-y")
+        foreach ($f in $InputFiles) { $reArgs += @("-i", $f) }
+        $reArgs += @("-filter_complex",$fc,"-map","[v]","-map","[a]","-c:v","libx265","-preset","slow","-crf","16","-c:a","ac3","-b:a","224k",$outputFile)
+        $mergeDur = ($InputFiles | ForEach-Object { Get-VideoDuration $_ } | Measure-Object -Sum).Sum
+        $r = Invoke-FfmpegWithProgress -FfmpegArgs $reArgs -DurationSec $mergeDur -Label "Merging"
+        if ($r.ExitCode -ne 0) { Write-Host "ERROR: Merge failed. See raw ffmpeg log: $script:FfmpegRawLog"; Remove-Item $tempDir -Recurse -Force -EA SilentlyContinue; Stop-Transcript | Out-Null; exit 1 }
     } else {
         Write-Host "  Stream copy succeeded."
     }
@@ -298,9 +468,11 @@ function Invoke-ConvertMp3 {
     Write-Host ""
     Write-Host "[2] Converting to MP3..."
     $t = Get-Date
+    $dur = Get-VideoDuration $InputFile
 
-    & $ffmpegExe -nostdin -y -i "$InputFile" -vn -c:a libmp3lame -q:a 0 "$outputFile"
-    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: Conversion failed."; Stop-Transcript | Out-Null; exit 1 }
+    $convArgs = @("-nostdin","-y","-i",$InputFile,"-vn","-c:a","libmp3lame","-q:a","0",$outputFile)
+    $r = Invoke-FfmpegWithProgress -FfmpegArgs $convArgs -DurationSec $dur -Label "Converting"
+    if ($r.ExitCode -ne 0) { Write-Host "ERROR: Conversion failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1 }
     Write-Host "  Convert: $([int]((Get-Date)-$t).TotalSeconds)s"
 
     Write-Host ""
@@ -329,8 +501,13 @@ function Get-CropParams {
     $scanSec = [math]::Min($dur, 30)
 
     Write-Host "  Scanning ${origW}x${origH} for up to ${scanSec}s..."
-    $raw = & $ffmpegExe -nostdin -i "$InputFile" -t $scanSec -vf "cropdetect=limit=24:round=2:reset=0" -f null NUL 2>&1
-    $last = ($raw | Select-String 'crop=\d+:\d+:\d+:\d+' | Select-Object -Last 1).ToString()
+    # cropdetect's own crop=W:H:X:Y values are logged at normal (not "error") verbosity, so this call
+    # keeps -LogLevel at ffmpeg's default and parses them out of the captured stderr - it's a scan, not
+    # an encode, so DurationSec is intentionally omitted and the progress line shows elapsed time only.
+    $scanArgs  = @("-nostdin","-i",$InputFile,"-t","$scanSec","-vf","cropdetect=limit=24:round=2:reset=0","-f","null","NUL")
+    $scanResult = Invoke-FfmpegWithProgress -FfmpegArgs $scanArgs -Label "Scanning" -LogLevel "info"
+    $lastMatch = ($scanResult.StdErr -split "`r?`n" | Select-String 'crop=\d+:\d+:\d+:\d+' | Select-Object -Last 1)
+    $last = if ($lastMatch) { $lastMatch.ToString() } else { "" }
 
     $cW = $origW; $cH = $origH; $cX = 0; $cY = 0; $found = $false
     if ($last -match 'crop=(\d+):(\d+):(\d+):(\d+)') {
@@ -409,10 +586,16 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out
 $LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 Start-Transcript -Path $LogFile -NoClobber | Out-Null
 
+# Sibling file for ffmpeg's own raw stderr/diagnostic output - see the design note above
+# Invoke-FfmpegWithProgress for why this can't just append into $LogFile.
+$script:FfmpegRawLog = Join-Path $LogDir "$([System.IO.Path]::GetFileNameWithoutExtension($LogFile))_ffmpeg.log"
+New-Item -ItemType File -Path $script:FfmpegRawLog -Force | Out-Null
+
 $toolName = switch ($choice) { "1" { "Compress" } "2" { "Landscape blur-fill" } "3" { "Remove black bars" } "4" { "Trim clip(s)" } "5" { "Merge files" } "6" { "Convert to MP3" } }
 Write-Host "=== FFMPEG Kit - $toolName ==="
 Write-Host "Started : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Input   : $InputFile"
+Write-Host "FFmpeg log: $script:FfmpegRawLog"
 Write-Host ""
 
 # ── Locate FFmpeg ─────────────────────────────────────────────────────────────
@@ -514,5 +697,6 @@ Write-Host "=== Complete ==="
 Write-Host "Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "Elapsed : $([int]($totalSec/60))m $($totalSec%60)s"
 Write-Host "Log     : $LogFile"
+Write-Host "FFmpeg  : $script:FfmpegRawLog"
 Write-Host ""
 Stop-Transcript | Out-Null
