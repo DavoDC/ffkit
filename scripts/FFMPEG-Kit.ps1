@@ -247,6 +247,57 @@ function Invoke-Compress {
     }
     Write-Host ""
 
+    $hasVideo = ((& $ffprobeExe -v error -select_streams v -show_entries stream=index -of csv=p=0 "$InputFile" 2>&1 | Out-String).Trim()) -ne ""
+
+    if (-not $hasVideo) {
+        # Audio-only input (e.g. mp3): no video stream to two-pass encode against.
+        # Single-pass audio bitrate targeting instead - the two-pass -pass 1 -an -f null path
+        # below produces zero output streams for audio-only inputs and ffmpeg errors out.
+        $targetBytes = $TargetMB * 1024 * 1024 * 0.98
+        $rawBps      = [int]($targetBytes * 8 / $dur / 1000)
+        # libmp3lame only accepts the standard MP3 bitrate ladder - anything else gets silently
+        # rounded UP to the nearest supported rate (e.g. 17k -> 32k), blowing past the target size.
+        # Round DOWN to the nearest supported rate instead, and below 32k drop to a lower sample
+        # rate (MPEG2.5) since 32k is the floor at 48/44.1kHz.
+        $mp3Ladder = @(8,16,24,32,40,48,56,64,80,96,112,128,160,192,224,256,320)
+        $audioBps  = ($mp3Ladder | Where-Object { $_ -le $rawBps } | Select-Object -Last 1)
+        if (-not $audioBps) { $audioBps = 8 }
+        $lowRate = $audioBps -lt 32
+        Write-Host "  Audio-only input - Audio bitrate: ${audioBps} kbps$(if ($lowRate) { ' (low sample rate)' })"
+        Write-Host "  Analysis: $([int]((Get-Date)-$t).TotalSeconds)s"
+
+        $outExt     = [System.IO.Path]::GetExtension($InputFile)
+        $outputFile = Join-Path $OutDir "${InputBase}_${TargetMB}mb${outExt}"
+
+        Write-Host ""
+        Write-Host "[3] Encoding..."
+        $t3 = Get-Date
+        $aArgs = @("-nostdin","-y","-i",$InputFile,"-c:a","libmp3lame","-b:a","${audioBps}k")
+        if ($lowRate) { $aArgs += @("-ar","11025") }
+        $aArgs += $outputFile
+        $r1 = Invoke-FfmpegWithProgress -FfmpegArgs $aArgs -DurationSec $dur -Label "Encoding"
+        if ($r1.ExitCode -ne 0) {
+            if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Encoding failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
+            Write-Host "ERROR: Encoding failed. See raw ffmpeg log: $script:FfmpegRawLog"; Stop-Transcript | Out-Null; exit 1
+        }
+        Write-Host "  Encode: $([int]((Get-Date)-$t3).TotalSeconds)s"
+
+        if (-not $Quiet) { Write-Host ""; Write-Host "[4] Results" }
+        $lines = @()
+        $success = Test-Path -LiteralPath $outputFile
+        if ($success) {
+            $outMB = [math]::Round((Get-Item -LiteralPath $outputFile).Length/1MB,2)
+            $ratio = [math]::Round((Get-Item -LiteralPath $outputFile).Length/(Get-Item -LiteralPath $InputFile).Length*100,1)
+            $lines += "Output : $outputFile"
+            $lines += "Size   : ${outMB} MB  (target: ${TargetMB} MB,  ${ratio}% of original)"
+            if ((Get-Item -LiteralPath $outputFile).Length -gt $TargetMB*1024*1024) {
+                $lines += "NOTE   : Slightly over limit (container overhead)."
+            }
+        } else { $lines += "ERROR: Output not created." }
+        if (-not $Quiet) { $lines | ForEach-Object { Write-Host "  $_" } }
+        return [PSCustomObject]@{ Success = $success; ErrorMessage = $null; Outputs = @($outputFile); Lines = $lines }
+    }
+
     $audioBps    = if ($dur -gt 600) { 48 } elseif ($dur -gt 300) { 64 } else { 96 }
     $targetBytes = $TargetMB * 1024 * 1024 * 0.98
     $vidBitrateK = [int]([math]::Max(5, ($targetBytes * 8 / $dur - $audioBps * 1000) / 1000))
