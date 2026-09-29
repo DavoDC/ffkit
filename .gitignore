@@ -19,3 +19,6 @@ venv/
 Thumbs.db
 dependencies/ffmpeg.previous/
 dependencies/ffmpeg.new/
+dependencies/ffmpeg.new.zip
+data/state/
+.pytest_cache/

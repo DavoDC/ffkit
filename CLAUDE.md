@@ -6,6 +6,8 @@ General-purpose FFmpeg scripts and utilities.
 
 - `scripts/` - end-user tools (drag-and-drop launchers + PowerShell/Python)
 - `dependencies/ffmpeg/` - FFmpeg binary (gitignored, auto-downloaded on first run)
+- `scripts/ffkit_update.py` - non-blocking background updater (stale-while-revalidate); `python scripts/ffkit_update.py --status|--check|--run|--resolve`; tests in `tests/` (`python -m pytest -q`), every network/process boundary injected
+- `data/state/` - updater state and lock (gitignored)
 - `data/logs/` - runtime logs from script runs
 - `docs/IDEAS.md` - pending work
 - `docs/HISTORY.md` - completed work
@@ -49,4 +51,5 @@ Example: `.\FFMPEG-Kit.ps1 -InputFiles "video.mp4" -Action trim -ClipArgs "20:55
 | `scripts/FFMPEG-Kit.bat` | Single drag-and-drop launcher for all tools (accepts 1+ files) |
 | `scripts/FFMPEG-Kit.ps1` | Unified tool: compress / landscape blur-fill / remove black bars / trim clip(s) / merge files |
 | `dependencies/ffmpeg/` | FFmpeg binary (gitignored) |
+| `scripts/ffkit_update.py` | Background updater: 24h check, download to `ffmpeg.new/`, `-version` smoke test, old kept in `ffmpeg.previous/`, per-file `os.replace` |
 | `data/logs/` | Timestamped logs from each run |

@@ -43,8 +43,23 @@ If `../ffkit/` exists, a project downloads FFmpeg into `ffkit/dependencies/ffmpe
 
 ---
 
+## Background updates
+
+FFmpeg goes stale, so ffkit can keep the shared binaries fresh without ever making a task wait. `scripts/ffkit_update.py` returns the current `ffmpeg.exe` straight away. If the last check was more than 24 hours ago, a detached background process looks up the latest release, downloads it, extracts it beside the live folder, runs `-version` on the new `ffmpeg.exe` as a smoke test, keeps the old files in `dependencies/ffmpeg.previous/`, and swaps each file in with `os.replace`. The next task picks up the new version.
+
+A failed download or a failed smoke test never touches the working binaries. If `ffmpeg.exe` is in use (Windows locks running programs) the new files stay staged and the swap is retried a little later. A lock file keeps it to one updater at a time, and the time of the last check is recorded before the network call so a crash cannot cause a retry storm. Activity is logged to `data/logs/ffkit_update.log`. It needs Python 3 and nothing else; the PowerShell tools do not start it on their own, so trigger it from your own tooling or by hand:
+
+```bash
+python scripts/ffkit_update.py --status   # last check, stale or fresh, pending swap (no side effects)
+python scripts/ffkit_update.py --check    # start the background updater if a check is due
+python scripts/ffkit_update.py --run --force   # update now, in the foreground
+```
+
+---
+
 ## Requirements
 
 - Windows
 - PowerShell (built into Windows)
 - Internet connection on first run (FFmpeg downloads once to `dependencies/ffmpeg/`)
+- Python 3 (only for the optional background updater)
