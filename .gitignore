@@ -17,3 +17,5 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+dependencies/ffmpeg.previous/
+dependencies/ffmpeg.new/
