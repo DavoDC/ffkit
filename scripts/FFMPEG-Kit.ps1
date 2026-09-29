@@ -170,8 +170,8 @@ function Invoke-FfmpegWithProgress {
 
 # ==============================================================================
 # HELPER: Target-MB selection for Invoke-Compress - split out so the batch
-# plan phase can ask this same question up front for each queued job (see
-# IDEAS.md "Multi-file batch flows"), without duplicating the prompt text.
+# plan phase can ask this same question up front for each queued job, without
+# duplicating the prompt text.
 # ==============================================================================
 function Read-TargetMBInteractive {
     param(
@@ -206,7 +206,7 @@ function Read-TargetMBInteractive {
 #
 # Takes the file/output-location/sizing values explicitly (rather than closing
 # over module-level globals) so the same body can run for the single-file (N=1)
-# path AND per-job inside a queued batch (see IDEAS.md "Multi-file batch flows").
+# path AND per-job inside a queued batch.
 # -TargetMB is the raw CLI override (prints "(from -TargetMB)", same as before);
 # -ResolvedTargetMB is a value already decided during the batch plan phase (skips
 # both the CLI-override branch and the interactive menu). -Quiet suppresses the
@@ -441,8 +441,8 @@ function Invoke-CropFix {
 
 # ==============================================================================
 # HELPERS: Clip-list collection for Invoke-Trim - split out so the batch plan
-# phase can gather clips for a queued job up front (see IDEAS.md "Multi-file
-# batch flows"), reusing the exact same prompts/parsing as the N=1 path.
+# phase can gather clips for a queued job up front, reusing the exact same
+# prompts/parsing as the N=1 path.
 # ==============================================================================
 function Get-ClipsFromArgs {
     param([Parameter(Mandatory=$true)][string[]]$ClipArgs)
@@ -733,7 +733,7 @@ Write-Host "=== FFMPEG Kit ==="
 
 # $choice drives the single-tool dispatch path (N=1, and N>1 "merge" mode).
 # $batchJobs (only set for N>1 "separate actions" mode) drives the queued
-# plan/execute/report path instead - see IDEAS.md "Multi-file batch flows".
+# plan/execute/report path instead (multi-file batch flow).
 $choice    = ""
 $batchJobs = $null
 
@@ -936,7 +936,7 @@ Write-Host "  ffprobe: $ffprobeExe"
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 if ($batchJobs) {
-    # Execute phase - sequential, no parallel ffmpeg execution (see IDEAS.md).
+    # Execute phase - sequential, no parallel ffmpeg execution.
     $batchResults = @()
     foreach ($job in $batchJobs) {
         $jInputDir = Split-Path -Parent $job.InputFile
