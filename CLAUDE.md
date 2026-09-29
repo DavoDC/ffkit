@@ -9,8 +9,7 @@ General-purpose FFmpeg scripts and utilities.
 - `scripts/ffkit_update.py` - non-blocking background updater (stale-while-revalidate); `python scripts/ffkit_update.py --status|--check|--run|--resolve`; tests in `tests/` (`python -m pytest -q`), every network/process boundary injected
 - `data/state/` - updater state and lock (gitignored)
 - `data/logs/` - runtime logs from script runs
-- `docs/IDEAS.md` - pending work
-- `docs/HISTORY.md` - completed work
+- `docs/IDEAS.md`, `docs/HISTORY.md` - stubs only: the backlog is kept privately by the maintainer, not in this repo (use GitHub issues for requests)
 
 ## FFmpeg location
 
