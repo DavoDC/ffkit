@@ -2,6 +2,29 @@
 
 General-purpose FFmpeg scripts and utilities.
 
+## How to use (Claude instructions)
+
+**Edit, trim, merge or convert a video (Windows PowerShell, non-interactive):**
+```powershell
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts\FFMPEG-Kit.ps1 -InputFiles "video.mp4" -Action trim -ClipArgs "20:55-"
+```
+`-Action` is one of `compress`, `landscape`, `cropfix`, `trim`, `merge`, `mp3` (or `1` to `6`). `-TargetMB` applies to `compress`. `-ClipArgs` takes ranges such as `"6:01-6:34"`, and a blank end means end of file. `-TrimMode fast` (default) stream-copies and cuts on the nearest keyframe; `-TrimMode precise` re-encodes for a frame-exact cut and is slow. With several `-InputFiles`, `-Action merge` merges them into one file; any other `-Action` applies to each file.
+
+**FFmpeg binary:** the script uses `dependencies/ffmpeg/ffmpeg.exe` and downloads it there on first run if it is missing.
+
+**Output:** files go to `$OutputDir` at the top of `scripts/FFMPEG-Kit.ps1` (default `%USERPROFILE%\Downloads`); an empty value writes next to the input. Run logs go to `data/logs/`.
+
+**FFmpeg updater (Python):**
+```
+python scripts/ffkit_update.py --status
+python scripts/ffkit_update.py --check
+python scripts/ffkit_update.py --run --force
+python scripts/ffkit_update.py --resolve
+```
+`--status` has no side effects. `--check` starts the background updater if the last check is over 24 hours old. `--run` updates in the foreground, and `--force` ignores the 24 hour rule. `--resolve` prints the `ffmpeg.exe` path and triggers an update if stale. `--dir DIR` manages a different FFmpeg folder.
+
+**Tests:** run `python -m pytest -q` from the repo root. Tests are in `tests/` and inject every network and process boundary, so they make no real downloads.
+
 ## Structure
 
 - `scripts/` - end-user tools (drag-and-drop launchers + PowerShell/Python)
