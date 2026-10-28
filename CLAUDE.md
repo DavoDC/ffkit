@@ -45,7 +45,7 @@ FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (
 
 ## Sibling repos that use ffkit's FFmpeg
 
-- **ytkit** (`C:\Users\David\GitHubRepos\ytkit`) - yt-dlp audio/video downloader. Points its `config/config.json` `ffmpeg_dir` at ffkit's `dependencies/ffmpeg/`. Default output: MP3 highest quality. See ytkit's `CLAUDE.md` for the full download command.
+- **ytkit** (the sibling `ytkit` repo) - yt-dlp audio/video downloader. Points its `config/config.json` `ffmpeg_dir` at ffkit's `dependencies/ffmpeg/`. Default output: MP3 highest quality. See ytkit's `CLAUDE.md` for the full download command.
 
 ## Documentation rule for the hub
 
