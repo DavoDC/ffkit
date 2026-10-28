@@ -6,7 +6,7 @@ param(
     # -Action: compress|landscape|cropfix|trim|merge|mp3 (or "1".."6")
     [string]$Action = "",
     [double]$TargetMB = 0,               # for -Action compress
-    [string[]]$ClipArgs = @(),           # for -Action trim, e.g. "6:01-6:34","8:54-9:24" (blank end = "to end of file", e.g. "20:55-")
+    [string[]]$ClipArgs = @(),           # for -Action trim, e.g. "0:10-0:25","1:00-1:20" (blank end = "to end of file", e.g. "20:55-")
     [string]$TrimMode = "fast"           # for -Action trim: "fast" (stream copy, keyframe-accurate, seconds) or "precise" (re-encode, frame-accurate, slow)
 )
 
@@ -169,6 +169,21 @@ function Invoke-FfmpegWithProgress {
 }
 
 # ==============================================================================
+# HELPER: Get-UniquePath - returns $Path, or name_1.ext, name_2.ext, ... when
+# that file already exists, so a rerun never silently overwrites an output.
+# ==============================================================================
+function Get-UniquePath {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $Path }
+    $dir  = Split-Path -Parent $Path
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($Path)
+    $ext  = [System.IO.Path]::GetExtension($Path)
+    $n = 1
+    while (Test-Path -LiteralPath (Join-Path $dir "${stem}_$n$ext")) { $n++ }
+    return (Join-Path $dir "${stem}_$n$ext")
+}
+
+# ==============================================================================
 # HELPER: Target-MB selection for Invoke-Compress - split out so the batch
 # plan phase can ask this same question up front for each queued job, without
 # duplicating the prompt text.
@@ -267,7 +282,7 @@ function Invoke-Compress {
         Write-Host "  Analysis: $([int]((Get-Date)-$t).TotalSeconds)s"
 
         $outExt     = [System.IO.Path]::GetExtension($InputFile)
-        $outputFile = Join-Path $OutDir "${InputBase}_${TargetMB}mb${outExt}"
+        $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}_${TargetMB}mb${outExt}")
 
         Write-Host ""
         Write-Host "[3] Encoding..."
@@ -304,7 +319,7 @@ function Invoke-Compress {
     Write-Host "  Video bitrate: ${vidBitrateK} kbps | Audio: ${audioBps} kbps"
     Write-Host "  Analysis: $([int]((Get-Date)-$t).TotalSeconds)s"
 
-    $outputFile = Join-Path $OutDir "${InputBase}_${TargetMB}mb.mp4"
+    $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}_${TargetMB}mb.mp4")
     $passlog    = Join-Path $env:TEMP "ffkit-pass-$PID"
 
     Write-Host ""
@@ -359,7 +374,7 @@ function Invoke-LandscapeFill {
         [switch]$Quiet
     )
     $cropW, $cropH, $cropX, $cropY, $hasCrop = Get-CropParams -InputFile $InputFile
-    $outputFile = Join-Path $OutDir "${InputBase}_landscape.mp4"
+    $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}_landscape.mp4")
     Write-Host ""
     Write-Host "[3] Encoding landscape blur-fill..."
     $t = Get-Date
@@ -410,7 +425,7 @@ function Invoke-CropFix {
         if ($Quiet) { return [PSCustomObject]@{ Success=$true; ErrorMessage=$null; Outputs=@(); Lines=@("No significant black bars detected - nothing to do.") } }
         Stop-Transcript | Out-Null; exit 0
     }
-    $outputFile = Join-Path $OutDir "${InputBase}_cropfix.mp4"
+    $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}_cropfix.mp4")
     Write-Host ""
     Write-Host "[3] Encoding with black bars removed..."
     $t = Get-Date
@@ -507,7 +522,7 @@ function Invoke-Trim {
     for ($i = 0; $i -lt $clips.Count; $i++) {
         $c = $clips[$i]
         $suffix = if ($clips.Count -gt 1) { "_clip$($i+1)" } else { "_clip" }
-        $clipFile = Join-Path $OutDir "${InputBase}${suffix}${ext}"
+        $clipFile = Get-UniquePath (Join-Path $OutDir "${InputBase}${suffix}${ext}")
         $endLabel = if ($c.End) { $c.End } else { "EOF" }
         Write-Host "  Clip $($i+1): $($c.Start) -> $endLabel"
         if ($TrimMode -eq "fast") {
@@ -574,7 +589,7 @@ function Invoke-Merge {
         Stop-Transcript | Out-Null; exit 1
     }
     $ext        = [System.IO.Path]::GetExtension($InputFiles[0])
-    $outputFile = Join-Path $outDir "${inputBase}_merged${ext}"
+    $outputFile = Get-UniquePath (Join-Path $outDir "${inputBase}_merged${ext}")
     $tempDir    = Join-Path $env:TEMP "ffkit-merge-$PID"
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $listFile   = Join-Path $tempDir "concat.txt"
@@ -631,7 +646,7 @@ function Invoke-ConvertMp3 {
         [Parameter(Mandatory=$true)][string]$InputBase,
         [switch]$Quiet
     )
-    $outputFile = Join-Path $OutDir "${InputBase}.mp3"
+    $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}.mp3")
     Write-Host ""
     Write-Host "[2] Converting to MP3..."
     $t = Get-Date
@@ -831,7 +846,7 @@ if (-not $batchJobs -and $choice -notin @("1","2","3","4","5","6")) {
 }
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
-$LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$LogFile  = Join-Path $LogDir "ffkit_$(Get-Date -Format 'yyyyMMdd-HHmmss-fff').log"
 Start-Transcript -Path $LogFile -NoClobber | Out-Null
 
 # Sibling file for ffmpeg's own raw stderr/diagnostic output - see the design note above
@@ -914,8 +929,15 @@ if (-not $ffmpegExe) {
     $dlSecs = [math]::Round(((Get-Date) - $dlStart).TotalSeconds, 1)
     Write-Host "  Download took: ${dlSecs}s"
     $extractDir = Join-Path $FfmpegDir "_extract"
-    if ($7zExe) { & $7zExe x $arch "-o$extractDir" -y | Out-Null } else { Expand-Archive -Path $arch -DestinationPath $extractDir -Force }
+    if ($7zExe) {
+        & $7zExe x $arch "-o$extractDir" -y | Out-Null
+        $extractExit = $LASTEXITCODE
+    } else {
+        Expand-Archive -Path $arch -DestinationPath $extractDir -Force
+        $extractExit = 0
+    }
     $ProgressPreference = $oldProgressPref
+    if ($extractExit -ne 0) { Write-Host "ERROR: 7z extraction failed (exit $extractExit)."; Stop-Transcript | Out-Null; exit 1 }
     # Flatten: move bin/ contents straight into $FfmpegDir, discard the rest (docs/license/src not needed).
     $binDir = Find-InDir $extractDir "ffmpeg.exe" | Split-Path -Parent
     Get-ChildItem -Path $binDir | Move-Item -Destination $FfmpegDir -Force

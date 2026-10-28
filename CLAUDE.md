@@ -8,7 +8,7 @@ General-purpose FFmpeg scripts and utilities.
 ```powershell
 powershell -ExecutionPolicy Bypass -NoProfile -File scripts\FFMPEG-Kit.ps1 -InputFiles "video.mp4" -Action trim -ClipArgs "20:55-"
 ```
-`-Action` is one of `compress`, `landscape`, `cropfix`, `trim`, `merge`, `mp3` (or `1` to `6`). `-TargetMB` applies to `compress`. `-ClipArgs` takes ranges such as `"6:01-6:34"`, and a blank end means end of file. `-TrimMode fast` (default) stream-copies and cuts on the nearest keyframe; `-TrimMode precise` re-encodes for a frame-exact cut and is slow. With several `-InputFiles`, `-Action merge` merges them into one file; any other `-Action` applies to each file.
+`-Action` is one of `compress`, `landscape`, `cropfix`, `trim`, `merge`, `mp3` (or `1` to `6`). `-TargetMB` applies to `compress`. `-ClipArgs` takes ranges such as `"0:10-0:25"`, and a blank end means end of file. `-TrimMode fast` (default) stream-copies and cuts on the nearest keyframe; `-TrimMode precise` re-encodes for a frame-exact cut and is slow. With several `-InputFiles`, `-Action merge` merges them into one file; any other `-Action` applies to each file.
 
 **FFmpeg binary:** the script uses `dependencies/ffmpeg/ffmpeg.exe` and downloads it there on first run if it is missing.
 
@@ -23,6 +23,15 @@ python scripts/ffkit_update.py --resolve
 ```
 `--status` has no side effects. `--check` starts the background updater if the last check is over 24 hours old. `--run` updates in the foreground, and `--force` ignores the 24 hour rule. `--resolve` prints the `ffmpeg.exe` path and triggers an update if stale. `--dir DIR` manages a different FFmpeg folder.
 
+**Generic video helper (vidtools.py, Python 3.9+, stdlib only):**
+```
+python scripts/vidtools.py black input.mp4
+python scripts/vidtools.py scenes input.mp4 --after 30
+python scripts/vidtools.py sheet input.mp4 sheet.jpg --every 3
+python scripts/vidtools.py trim-black input.mp4 trimmed.mp4
+```
+`black` prints `start end` lines, `scenes` prints times in seconds, and `sheet` and `trim-black` print the written path. Every command exits 1 on failure and never overwrites an existing file (it writes `name_1.ext`).
+
 **Tests:** run `python -m pytest -q` from the repo root. Tests are in `tests/` and inject every network and process boundary, so they make no real downloads.
 
 ## Structure
@@ -30,13 +39,14 @@ python scripts/ffkit_update.py --resolve
 - `scripts/` - end-user tools (drag-and-drop launchers + PowerShell/Python)
 - `dependencies/ffmpeg/` - FFmpeg binary (gitignored, auto-downloaded on first run)
 - `scripts/ffkit_update.py` - non-blocking background updater (stale-while-revalidate); `python scripts/ffkit_update.py --status|--check|--run|--resolve`; tests in `tests/` (`python -m pytest -q`), every network/process boundary injected
+- `scripts/vidtools.py` - generic ffmpeg/ffprobe helper (`black`, `scenes`, `sheet`, `trim-black`); `run` injected, tests in `tests/test_vidtools.py`
 - `data/state/` - updater state and lock (gitignored)
 - `data/logs/` - runtime logs from script runs
 - Project planning is kept privately by the maintainer, not in this repo (use GitHub issues for requests)
 
 ## FFmpeg location
 
-Tools download FFmpeg to `dependencies/ffmpeg/` automatically if not on PATH.
+Tools download FFmpeg to `dependencies/ffmpeg/` automatically if not on PATH. The `dependencies/` folder is gitignored and the binary is not in this repo.
 This is the shared location - sibling repos check here first before downloading their own copy.
 
 ## Output defaults
@@ -49,12 +59,12 @@ FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (
 
 ## Documentation rule for the hub
 
-ffkit is a personal setup - external users of sibling repos won't have it. **Never mention ffkit in any public-facing README** of repos that use it (unless that repo explicitly cross-references ffkit as a sibling tool). Only these internal surfaces may mention it by default: `CLAUDE.md` and `dependencies/ffmpeg/README.md`. The hub behavior is transparent (silent fallback) - external users need no awareness of it.
+ffkit is a personal setup - external users of sibling repos won't have it. **Never mention ffkit in any public-facing README** of repos that use it (unless that repo explicitly cross-references ffkit as a sibling tool). Only this internal surface may mention it by default: `CLAUDE.md`. The hub behavior is transparent (silent fallback) - external users need no awareness of it.
 
 ## Trim efficiency: fast (stream copy) vs precise (re-encode)
 
 `-Action trim` defaults to `-TrimMode fast`: input-seek (`-ss` before `-i`) + `-c copy`, no re-encode.
-For a simple cut (e.g. "give me everything from 20:55 onward" on an 8GB file) this takes seconds,
+For a simple cut (e.g. "give me everything from 20:55 onward" on a large file) this takes seconds,
 not minutes, because no frames are decoded/encoded - the container is just re-muxed. Cut lands on
 the nearest keyframe at/before the requested time (usually within ~1-2s), not frame-exact.
 
@@ -73,5 +83,6 @@ Example: `.\FFMPEG-Kit.ps1 -InputFiles "video.mp4" -Action trim -ClipArgs "20:55
 | `scripts/FFMPEG-Kit.bat` | Single drag-and-drop launcher for all tools (accepts 1+ files) |
 | `scripts/FFMPEG-Kit.ps1` | Unified tool: compress / landscape blur-fill / remove black bars / trim clip(s) / merge files |
 | `dependencies/ffmpeg/` | FFmpeg binary (gitignored) |
+| `scripts/vidtools.py` | Generic ffmpeg/ffprobe helper: black detection, scene times, contact sheet, black trim |
 | `scripts/ffkit_update.py` | Background updater: 24h check, download to `ffmpeg.new/`, `-version` smoke test, old kept in `ffmpeg.previous/`, per-file `os.replace` |
 | `data/logs/` | Timestamped logs from each run |
