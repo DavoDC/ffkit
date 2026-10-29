@@ -56,10 +56,14 @@ FFMPEG-Kit's `$OutputDir` defaults to `%USERPROFILE%\Downloads` for all output (
 ## Sibling repos that use ffkit's FFmpeg
 
 - **ytkit** (the sibling `ytkit` repo) - yt-dlp audio/video downloader. Points its `config/config.json` `ffmpeg_dir` at ffkit's `dependencies/ffmpeg/`. Default output: MP3 highest quality. See ytkit's `CLAUDE.md` for the full download command.
+- **FLAC_Flow**, **RivalsVidMaker**, **CoverVidMaker** - find ffkit's FFmpeg by sibling path (`src/deps.py`, `src/config.py`, `src/Main.cpp` respectively).
+- Some private repos also use the hub; they are deliberately not named here (this repo is public).
 
 ## Documentation rule for the hub
 
 ffkit is a personal setup - external users of sibling repos won't have it. **Never mention ffkit in any public-facing README** of repos that use it (unless that repo explicitly cross-references ffkit as a sibling tool). Only this internal surface may mention it by default: `CLAUDE.md`. The hub behavior is transparent (silent fallback) - external users need no awareness of it.
+
+The reverse is allowed: this repo's README lists consuming repos, but ONLY ones confirmed PUBLIC (`gh repo view DavoDC/<repo> --json visibility`) and confirmed to use the hub in code. Never list or name a private repo, here or in the README. Re-verify the README list whenever the sibling list above changes.
 
 ## Trim efficiency: fast (stream copy) vs precise (re-encode)
 

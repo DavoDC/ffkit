@@ -48,6 +48,13 @@ ffkit acts as a shared FFmpeg location for any project cloned alongside it.
 
 If `../ffkit/` exists, a project downloads FFmpeg into `ffkit/dependencies/ffmpeg/` and uses it from there - including ffkit's own tools. Once any project has run, all others find FFmpeg already present. If `ffkit` is absent, each project falls back to downloading into its own local folder. Projects stay fully standalone either way.
 
+### Projects using this hub
+
+- [FLAC_Flow](https://github.com/DavoDC/FLAC_Flow)
+- [RivalsVidMaker](https://github.com/DavoDC/RivalsVidMaker)
+- [CoverVidMaker](https://github.com/DavoDC/CoverVidMaker)
+- [ytkit](https://github.com/DavoDC/ytkit)
+
 ---
 
 ## Background updates
