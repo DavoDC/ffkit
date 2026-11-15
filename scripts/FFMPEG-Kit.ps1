@@ -7,7 +7,8 @@ param(
     [string]$Action = "",
     [double]$TargetMB = 0,               # for -Action compress
     [string[]]$ClipArgs = @(),           # for -Action trim, e.g. "0:10-0:25","1:00-1:20" (blank end = "to end of file", e.g. "20:55-")
-    [string]$TrimMode = "fast"           # for -Action trim: "fast" (stream copy, keyframe-accurate, seconds) or "precise" (re-encode, frame-accurate, slow)
+    [string]$TrimMode = "fast",          # for -Action trim: "fast" (stream copy, keyframe-accurate, seconds) or "precise" (re-encode, frame-accurate, slow)
+    [string]$OutputName = ""             # for -Action mp3: output base name without extension (single input only); -ClipArgs "0-3" also limits mp3 to that range
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -644,15 +645,30 @@ function Invoke-ConvertMp3 {
         [Parameter(Mandatory=$true)][string]$InputFile,
         [Parameter(Mandatory=$true)][string]$OutDir,
         [Parameter(Mandatory=$true)][string]$InputBase,
+        [string[]]$ClipArgs = @(),
+        [string]$OutputName = "",
         [switch]$Quiet
     )
-    $outputFile = Get-UniquePath (Join-Path $OutDir "${InputBase}.mp3")
+    $outBase = if ($OutputName -and $OutputName.Trim()) { $OutputName.Trim() } else { $InputBase }
+    $outputFile = Get-UniquePath (Join-Path $OutDir "${outBase}.mp3")
     Write-Host ""
     Write-Host "[2] Converting to MP3..."
     $t = Get-Date
     $dur = Get-VideoDuration $InputFile
 
-    $convArgs = @("-nostdin","-y","-i",$InputFile,"-vn","-c:a","libmp3lame","-q:a","0",$outputFile)
+    # Optional range (first -ClipArgs entry, "start-end", blank end = to EOF): accurate cut after -i.
+    $rangeArgs = @()
+    if ($ClipArgs.Count -gt 0) {
+        $toSec = { param($s) $v = 0.0; foreach ($p in ($s -split ':')) { $v = $v*60 + [double]$p }; $v }
+        $parts = $ClipArgs[0] -split '-', 2
+        if ($parts.Count -ne 2) { Write-Host "ERROR: Invalid clip format '$($ClipArgs[0])' - expected 'start-end'."; Stop-Transcript | Out-Null; exit 1 }
+        $startS = if ($parts[0].Trim()) { & $toSec $parts[0].Trim() } else { 0.0 }
+        $rangeArgs += @("-ss", "$startS")
+        if ($parts[1].Trim()) { $endS = & $toSec $parts[1].Trim(); $rangeArgs += @("-to", "$endS"); $dur = $endS - $startS }
+        elseif ($dur) { $dur = $dur - $startS }
+    }
+
+    $convArgs = @("-nostdin","-y","-i",$InputFile) + $rangeArgs + @("-vn","-c:a","libmp3lame","-q:a","0",$outputFile)
     $r = Invoke-FfmpegWithProgress -FfmpegArgs $convArgs -DurationSec $dur -Label "Converting"
     if ($r.ExitCode -ne 0) {
         if ($Quiet) { return [PSCustomObject]@{ Success=$false; ErrorMessage="Conversion failed. See raw ffmpeg log: $script:FfmpegRawLog"; Outputs=@(); Lines=@() } }
@@ -999,7 +1015,7 @@ if ($batchJobs) {
         "3" { Invoke-CropFix -InputFile $InputFile -OutDir $outDir -InputBase $inputBase | Out-Null }
         "4" { Invoke-Trim -InputFile $InputFile -OutDir $outDir -InputBase $inputBase -ClipArgs $ClipArgs -TrimMode $TrimMode | Out-Null }
         "5" { Invoke-Merge }
-        "6" { Invoke-ConvertMp3 -InputFile $InputFile -OutDir $outDir -InputBase $inputBase | Out-Null }
+        "6" { Invoke-ConvertMp3 -InputFile $InputFile -OutDir $outDir -InputBase $inputBase -ClipArgs $ClipArgs -OutputName $OutputName | Out-Null }
     }
 }
 
